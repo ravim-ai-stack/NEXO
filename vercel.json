@@ -9,8 +9,14 @@
       "src": "frontend/package.json",
       "use": "@vercel/static-build",
       "config": {
-        "distDir": "../backend/static_root"
+        "distDir": "dist"
       }
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/reminders/",
+      "schedule": "30 3 * * *"
     }
   ],
   "routes": [
@@ -23,12 +29,12 @@
       "dest": "backend/config/wsgi.py"
     },
     {
-      "src": "/static/(.*)",
-      "dest": "backend/static_root/$1"
+      "src": "/(.+\\..+)",
+      "dest": "/frontend/$1"
     },
     {
       "src": "/(.*)",
-      "dest": "backend/static_root/index.html"
+      "dest": "/frontend/index.html"
     }
   ]
 }
