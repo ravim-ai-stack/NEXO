@@ -1,34 +1,29 @@
 /**
  * useProjectRole
- * Derives the current user's role for a specific project
- * and exposes a bound can() function.
+ * Derives the current user's effective role for a specific project
+ * (computed by the backend as `my_role`) and exposes a bound can() function.
  *
  * Returns:
- *   role       — "ADMIN" | "MEMBER" | "VIEWER" | null
- *   isAdmin    — true if role === "ADMIN"
- *   isMember   — true if role === "ADMIN" || "MEMBER"
- *   isViewer   — true if role === "VIEWER"
- *   canEdit    — alias for isMember
+ *   role      — "ADMIN" | "MANAGER" | "MEMBER" | "VIEWER" | null
+ *   isAdmin   — admin-level inside the project (ADMIN or MANAGER): members, sprints, settings...
+ *   isViewer  — true if role === "VIEWER"
+ *   isLimited — true if role === "MEMBER" (read-only, except status/resolution)
+ *   canEdit   — can edit issue fields (ADMIN or MANAGER)
  *   can(action, context?) — bound to the current role; delegates to permissions.js
  */
 import { can as _can } from "../permissions";
 
-export function useProjectRole(projectDetails, currentUser) {
+export function useProjectRole(projectDetails) {
   const role = projectDetails?.my_role || null;
 
-  const isAdmin  = role === "ADMIN";
+  const isAdmin = role === "ADMIN" || role === "MANAGER";
   const isViewer = role === "VIEWER";
-  const isMember = role === "ADMIN" || role === "MEMBER";
-  const canEdit  = isMember;
+  const isLimited = role === "MEMBER";
+  const canEdit = isAdmin;
 
-  /**
-   * Bound permission check for the current user's role.
-   * @param {string} action   — one of ACTIONS.*
-   * @param {object} [context] — { isReporter, isOwnComment, isOwnAttachment }
-   */
   function can(action, context = {}) {
     return _can(role, action, context);
   }
 
-  return { role, isAdmin, isMember, isViewer, canEdit, can };
+  return { role, isAdmin, isViewer, isLimited, isMember: canEdit, canEdit, can };
 }

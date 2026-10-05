@@ -6,9 +6,23 @@ from django.utils import timezone
 
 class User(AbstractUser):
     """
-    Custom user model with avatar and job title.
+    Custom user model with avatar, designation and reporting line.
     """
     avatar_url = models.URLField(blank=True, null=True)
+    class UserType(models.TextChoices):
+        ADMIN = "ADMIN", "Admin"
+        MANAGER = "MANAGER", "Manager"
+        MEMBER = "MEMBER", "Member"
+
+    # Organisation-wide access level (what the user may do across NEXO).
+    user_type = models.CharField(max_length=10, choices=UserType.choices, default=UserType.MEMBER)
+    designation = models.CharField(max_length=100, blank=True, default="")
+    reporting_manager = models.ForeignKey(
+        "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="direct_reports"
+    )
+    # True only when an admin deactivated the account (is_active is also False then).
+    # Unverified self-registrations have is_active=False but is_deactivated=False.
+    is_deactivated = models.BooleanField(default=False)
 
     def __str__(self):
         return self.username

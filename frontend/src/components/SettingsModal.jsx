@@ -25,7 +25,7 @@ export default function SettingsModal({ isOpen, onClose }) {
       setProjects(res.data);
       if (res.data.length > 0) setSelectedWorkflowProject(res.data[0]);
       // Check if user is Admin in at least one project
-      const hasAdmin = res.data.some((p) => p.my_role === "ADMIN");
+      const hasAdmin = res.data.some((p) => p.my_role === "ADMIN" || p.my_role === "MANAGER");
       setIsAdminInAnyProject(hasAdmin);
     }).catch(() => {});
   }, []);
@@ -177,7 +177,7 @@ export default function SettingsModal({ isOpen, onClose }) {
                           setSelectedWorkflowProject(p || null);
                         }}
                       >
-                        {projects.filter((p) => p.my_role === "ADMIN").map((p) => (
+                        {projects.filter((p) => p.my_role === "ADMIN" || p.my_role === "MANAGER").map((p) => (
                           <option key={p.id} value={p.id}>{p.name} ({p.key})</option>
                         ))}
                       </select>

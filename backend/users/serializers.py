@@ -15,19 +15,87 @@ User = get_user_model()
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id", "username", "email", "first_name", "last_name", "avatar_url"]
+        fields = [
+            "id", "username", "email", "first_name", "last_name", "avatar_url",
+            "designation", "is_deactivated", "user_type",
+        ]
+
+
+class SessionUserSerializer(UserSerializer):
+    """The logged-in user (login / me): also tells the UI what they are allowed to do."""
+    can_manage_users = serializers.SerializerMethodField()
+    can_toggle_users = serializers.SerializerMethodField()
+    can_create_project = serializers.SerializerMethodField()
+    can_delete_project = serializers.SerializerMethodField()
+
+    class Meta(UserSerializer.Meta):
+        fields = UserSerializer.Meta.fields + [
+            "can_manage_users", "can_toggle_users", "can_create_project", "can_delete_project",
+        ]
+
+    # `user_type` is reported as the effective org role (superusers count as Admin).
+    def to_representation(self, instance):
+        from .access import org_role
+        data = super().to_representation(instance)
+        data["user_type"] = org_role(instance)
+        return data
+
+    def get_can_manage_users(self, obj):
+        from .access import can_create_users
+        return can_create_users(obj)
+
+    def get_can_toggle_users(self, obj):
+        from .access import can_toggle_users
+        return can_toggle_users(obj)
+
+    def get_can_create_project(self, obj):
+        from .access import can_create_project
+        return can_create_project(obj)
+
+    def get_can_delete_project(self, obj):
+        from .access import can_delete_project
+        return can_delete_project(obj)
 
 
 class UserWithProjectsSerializer(serializers.ModelSerializer):
     projects_count = serializers.SerializerMethodField()
     assigned_issues_count = serializers.SerializerMethodField()
+    reporting_manager = serializers.PrimaryKeyRelatedField(read_only=True)
+    reporting_manager_name = serializers.SerializerMethodField()
+    invite_pending = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             "id", "username", "email", "first_name", "last_name", "avatar_url",
-            "projects_count", "assigned_issues_count", "date_joined"
+            "projects_count", "assigned_issues_count", "date_joined",
+            "designation", "reporting_manager", "reporting_manager_name",
+            "is_active", "is_deactivated", "invite_pending",
+            "user_type", "can_edit",
         ]
+
+    def get_can_edit(self, obj):
+        """Whether the requesting user may edit this person (Admin: anyone; Manager: their own team)."""
+        from .access import ADMIN, MANAGER, org_role, team_user_ids
+        request = self.context.get("request")
+        if not request:
+            return False
+        role = org_role(request.user)
+        if role == ADMIN:
+            return True
+        if role == MANAGER:
+            cache = self.context.setdefault("_team_ids", team_user_ids(request.user))
+            return obj.pk in cache
+        return False
+
+    def get_reporting_manager_name(self, obj):
+        m = obj.reporting_manager
+        return (m.get_full_name() or m.username) if m else None
+
+    def get_invite_pending(self, obj):
+        # Invited by an admin but hasn't opened the invitation yet.
+        return obj.last_login is None and not obj.has_usable_password() and not obj.is_deactivated
 
     def get_projects_count(self, obj):
         return obj.project_memberships.count()
@@ -85,6 +153,10 @@ class RegisterSerializer(serializers.ModelSerializer):
         email = validated_data["email"]
         username = validated_data["username"]
 
+        # The very first account bootstraps the workspace as Admin; everyone after is a Member
+        # (admins/managers then add or re-classify people from the Teams page).
+        first_type = "MEMBER" if User.objects.filter(user_type="ADMIN").exists() else "ADMIN"
+
         # Create user in pending/inactive state until email is verified
         user = User.objects.create_user(
             username=username,
@@ -92,6 +164,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             password=validated_data["password"],
             first_name=validated_data.get("first_name", ""),
             last_name=validated_data.get("last_name", ""),
+            user_type=first_type,
             is_active=False,
         )
 

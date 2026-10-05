@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { userLabel } from "../utils/userLabel";
 import { IssueTypeIcon, PriorityIcon } from "./Icons";
 
 export default function SummaryView({
@@ -50,7 +51,7 @@ export default function SummaryView({
       ``,
       `TEAM MEMBERS WORKLOAD BREAKDOWN:`,
       ...members.map((m) => {
-        const username = m.user?.username || m.username;
+        const username = m.user ? userLabel(m.user) : m.username;
         const userIssues = issues.filter((i) => i.assignee?.id === (m.user?.id || m.id));
         const userDone = userIssues.filter((i) => i.status === "DONE").length;
         const userInProgress = userIssues.filter((i) => i.status === "IN_PROGRESS").length;
@@ -94,9 +95,11 @@ export default function SummaryView({
             <button className="jira-btn-secondary" onClick={() => window.print()} title="Print or save as PDF">
               Print
             </button>
-            <button className="jira-btn-primary" onClick={onCreateIssueTrigger}>
-              + Create Issue
-            </button>
+            {onCreateIssueTrigger && (
+              <button className="jira-btn-primary" onClick={onCreateIssueTrigger}>
+                + Create Issue
+              </button>
+            )}
           </div>
         </div>
 
@@ -154,7 +157,7 @@ export default function SummaryView({
 
         <div className="jira-members-work-list">
           {members.map((m) => {
-            const username = m.user?.username || m.username;
+            const username = m.user ? userLabel(m.user) : m.username;
             const userId = m.user?.id || m.id;
             const userIssues = issues.filter((i) => i.assignee?.id === userId);
             const userDone = userIssues.filter((i) => i.status === "DONE");

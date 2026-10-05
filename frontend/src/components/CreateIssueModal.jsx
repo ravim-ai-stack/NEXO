@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { userLabel } from "../utils/userLabel";
 import api from "../api/client";
 import { useAuth } from "../context/AuthContext";
 
@@ -74,7 +75,9 @@ export default function CreateIssueModal({
       onIssueCreated && onIssueCreated();
       onClose();
     } catch (err) {
-      setError(err.response?.data?.detail || "Failed to create issue. Please check fields.");
+      const data = err.response?.data;
+      const first = data && typeof data === "object" ? Object.values(data).flat()[0] : null;
+      setError(data?.detail || (typeof first === "string" ? first : "Failed to create issue. Please check fields."));
     } finally {
       setSubmitting(false);
     }
@@ -205,7 +208,7 @@ export default function CreateIssueModal({
                   <option value="">Unassigned</option>
                   {projectMembers.map((m) => (
                     <option key={m.user?.id || m.id} value={m.user?.id || m.id}>
-                      {m.user?.username || m.username}
+                      {m.user ? userLabel(m.user) : m.username}
                     </option>
                   ))}
                 </select>

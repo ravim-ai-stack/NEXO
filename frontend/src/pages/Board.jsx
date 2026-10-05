@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { userLabel } from "../utils/userLabel";
 import { useParams, Link, useSearchParams, useNavigate } from "react-router-dom";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 import api from "../api/client";
@@ -32,7 +33,11 @@ export default function Board() {
   const [projectDetails, setProjectDetails] = useState(null);
   const [issues, setIssues] = useState([]);
   const [members, setMembers] = useState([]);
-  const [activeTab, setActiveTab] = useState("list"); // 'list', 'summary', 'board', 'calendar', 'docs'
+  // ?tab=calendar (used by reminder emails) opens straight on that tab
+  const [activeTab, setActiveTab] = useState(() => {
+    const requested = searchParams.get("tab");
+    return ["summary", "list", "board", "calendar", "backlog"].includes(requested) ? requested : "list";
+  });
   const [searchVal, setSearchVal] = useState("");
   const [selectedIssueId, setSelectedIssueId] = useState(null);
   const [showMembersModal, setShowMembersModal] = useState(false);
@@ -88,13 +93,8 @@ export default function Board() {
     if (!destination || (source.droppableId === destination.droppableId && source.index === destination.index)) {
       return;
     }
-    // Only Admin or the assignee of the dragged issue can move it
-    const draggedIssue = issues.find((i) => i.id === Number(draggableId));
-    const isAdmin = projectDetails?.my_role === "ADMIN";
-    const isAssignee = draggedIssue?.assignee?.id === user?.id;
-    if (!isAdmin && !isAssignee) {
-      return; // silently block — non-assignee Member cannot drag
-    }
+    // Admins, Managers and Members may move cards (changes status); Viewers cannot
+    if (!can(ACTIONS.CHANGE_ISSUE_STATUS)) return;
     setIssues((prev) =>
       prev.map((i) => (i.id === Number(draggableId) ? { ...i, status: destination.droppableId } : i))
     );
@@ -120,7 +120,7 @@ export default function Board() {
   const projectKey = projectDetails?.key || "KAN";
 
   // Role-based visibility
-  const { isAdmin, isMember, isViewer, can } = useProjectRole(projectDetails, user);
+  const { role, isAdmin, can } = useProjectRole(projectDetails);
 
   // Build kanban columns from project's workflow states if available, else use fallback
   const kanbanColumns = projectDetails?.workflow_states?.length
@@ -184,8 +184,8 @@ export default function Board() {
                 {members.length > 0 && <span className="jira-members-badge-num">{members.length}</span>}
               </button>
 
-              {/* More options — Admin only shows Delete Project */}
-              {isAdmin && (
+              {/* More options — only org Admins can delete a project */}
+              {can(ACTIONS.DELETE_PROJECT) && (
                 <div className="jira-nav-dropdown-wrap" style={{ position: "relative" }}>
                   <button
                     className="jira-btn-icon-plain"
@@ -228,13 +228,15 @@ export default function Board() {
 
             {/* Right Action Icons — role-gated */}
             <div className="jira-project-actions-right">
-              {/* Share — all roles */}
-              <button className="jira-btn-action-icon" title="Share project" onClick={() => setShowShareModal(true)}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
-                  <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
-                </svg>
-              </button>
+              {/* Share — adds members, so only those who can manage members */}
+              {can(ACTIONS.ADD_REMOVE_MEMBERS) && (
+                <button className="jira-btn-action-icon" title="Share project" onClick={() => setShowShareModal(true)}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                    <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+                  </svg>
+                </button>
+              )}
 
               {/* Automation — Admin only */}
               {can(ACTIONS.EDIT_PROJECT_SETTINGS) && (
@@ -349,7 +351,7 @@ export default function Board() {
               issues={issues}
               members={members}
               currentUser={user}
-              isViewer={isViewer}
+              role={role}
               onSelectIssue={(id) => setSelectedIssueId(id)}
               onRefresh={loadIssues}
             />
@@ -362,15 +364,15 @@ export default function Board() {
               issues={issues}
               members={members}
               onSelectIssue={(id) => setSelectedIssueId(id)}
-              onCreateIssueTrigger={() => setShowCreateModal(true)}
+              onCreateIssueTrigger={can(ACTIONS.CREATE_ISSUE) ? () => setShowCreateModal(true) : undefined}
             />
           )}
 
           {/* 3. KANBAN BOARD VIEW */}
           {activeTab === "board" && (
             <div className="jira-board-view-container">
-              {/* Viewer sees board read-only — no drag, no quick-add */}
-              {isViewer ? (
+              {/* Viewers see the board read-only — no drag, no quick-add */}
+              {!can(ACTIONS.CHANGE_ISSUE_STATUS) ? (
                 <div className="jira-kanban-board">
                   {kanbanColumns.map((col) => {
                     const colIssues = issues.filter((i) =>
@@ -396,7 +398,7 @@ export default function Board() {
                               <div className="jira-card-bottom">
                                 <span className="jira-card-key">{projectKey}-{issue.id}</span>
                                 {issue.assignee && (
-                                  <div className="jira-avatar-circle small">{issue.assignee.username.substring(0, 2).toUpperCase()}</div>
+                                  <div className="jira-avatar-circle small" title={userLabel(issue.assignee)}>{issue.assignee.username.substring(0, 2).toUpperCase()}</div>
                                 )}
                               </div>
                             </div>
@@ -458,7 +460,7 @@ export default function Board() {
                                             </span>
                                           </div>
                                           {issue.assignee ? (
-                                            <div className="jira-avatar-circle small" title={issue.assignee.username}>
+                                            <div className="jira-avatar-circle small" title={userLabel(issue.assignee)}>
                                               {issue.assignee.username.substring(0, 2).toUpperCase()}
                                             </div>
                                           ) : (
@@ -479,7 +481,7 @@ export default function Board() {
                             </div>
 
                             {/* Quick Add — Member/Admin only */}
-                            {can(ACTIONS.MOVE_ISSUE) && (quickAddCol === col.key ? (
+                            {can(ACTIONS.CREATE_ISSUE) && (quickAddCol === col.key ? (
                               <form onSubmit={(e) => handleQuickAdd(col.key, e)} className="jira-quick-add-form">
                                 <input type="text" className="jira-input-sm" placeholder="What needs to be done?"
                                   value={quickTitle} onChange={(e) => setQuickTitle(e.target.value)} autoFocus />
@@ -506,7 +508,15 @@ export default function Board() {
 
           {/* 4. CALENDAR VIEW */}
           {activeTab === "calendar" && (
-            <CalendarView issues={issues} onSelectIssue={(id) => setSelectedIssueId(id)} />
+            <CalendarView
+              issues={issues}
+              onSelectIssue={(id) => setSelectedIssueId(id)}
+              projectId={projectId}
+              members={members}
+              currentUser={user}
+              canAdd={role === "ADMIN" || role === "MANAGER" || role === "MEMBER"}
+              isAdmin={isAdmin}
+            />
           )}
 
           {/* 5. DOCS VIEW */}
@@ -516,8 +526,7 @@ export default function Board() {
               issues={issues}
               members={members}
               currentUser={user}
-              isViewer={isViewer}
-              isAdmin={isAdmin}
+              role={role}
               onRefresh={loadIssues}
             />
           )}
@@ -553,8 +562,7 @@ export default function Board() {
           projectKey={projectKey}
           members={members}
           currentUser={user}
-          isViewer={isViewer}
-          isAdmin={isAdmin}
+          role={role}
           onClose={() => setSelectedIssueId(null)}
           onUpdate={loadIssues}
         />

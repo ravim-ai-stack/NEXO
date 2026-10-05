@@ -40,13 +40,21 @@ export function AuthProvider({ children }) {
     return res.data;
   }
 
+  // Invitation link: signs the invited user straight in (no verification code).
+  async function acceptInvite(token) {
+    const res = await api.post("/auth/accept-invite/", { token });
+    localStorage.setItem("token", res.data.token);
+    setUser(res.data.user);
+    return res.data;
+  }
+
   function logout() {
     localStorage.removeItem("token");
     setUser(null);
   }
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, verifyCode, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, register, verifyCode, acceptInvite, logout }}>
       {children}
     </AuthContext.Provider>
   );

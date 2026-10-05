@@ -1,9 +1,20 @@
+import re
+
+from django.db.models import Q
 from rest_framework import permissions, viewsets
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, MultiPartParser
 
-from projects.models import ProjectMembership
 from projects.permissions import IsProjectMemberOrAbove
+from users.access import (
+    MEMBER_EDITABLE_ISSUE_FIELDS,
+    LimitedMemberReadOnly,
+    has_project_access,
+    is_org_admin,
+    is_project_admin,
+    org_role,
+    visible_projects_q,
+)
 from users.models import Notification
 from users.utils import send_assignment_email, send_notification_email
 
@@ -65,34 +76,107 @@ def _notify_assignee(issue, assigned_by_user):
         )
 
 
+MENTION_RE = re.compile(r"@([\w]+)")
+
+
+def _mentioned_users(text, project, actor, exclude_names=()):
+    """Active project members @mentioned in `text` (never the actor, never someone already mentioned before)."""
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+    found = []
+    for name in sorted(set(MENTION_RE.findall(text or ""))):
+        if name.lower() in exclude_names:
+            continue
+        user = User.objects.filter(username__iexact=name, is_active=True).first()
+        if user and user != actor and has_project_access(user, project):
+            found.append(user)
+    return found
+
+
+def _notify_issue_mentions(issue, actor, texts, exclude_names=(), skip_users=()):
+    """
+    @mentions in an issue's summary/description -> in-app notification + email for each mentioned person.
+    `skip_users` are people already told about this issue another way (e.g. just assigned) so nobody is mailed twice.
+    """
+    issue_key = f"{issue.project.key}-{issue.pk}"
+    notified = set(skip_users)
+    for text in texts:
+        for user in _mentioned_users(text, issue.project, actor, exclude_names):
+            if user in notified:
+                continue
+            notified.add(user)
+            Notification.objects.create(
+                recipient=user,
+                actor=actor,
+                action=f"mentioned you in {issue_key}",
+                target=issue.title,
+            )
+            if user.email:
+                send_notification_email(
+                    recipient_email=user.email,
+                    recipient_username=user.username,
+                    actor=actor.username,
+                    action="mentioned you in",
+                    issue_key=issue_key,
+                    issue_title=issue.title,
+                    project_name=issue.project.name,
+                    project_id=issue.project.id,
+                    issue_id=issue.pk,
+                    why_reason="mention",
+                    comment_body=text,
+                    body_label=f"Mentioned by {actor.username}",
+                    issue_type=issue.issue_type,
+                    issue_priority=issue.priority,
+                    issue_status=issue.status,
+                    issue_reporter=issue.reporter.username if issue.reporter else None,
+                    issue_assignee=issue.assignee.username if issue.assignee else None,
+                )
+
+
 class IssueViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated, IsProjectMemberOrAbove]
+    permission_classes = [permissions.IsAuthenticated, LimitedMemberReadOnly, IsProjectMemberOrAbove]
+    # Members may PATCH an issue, but only its status / resolution (see perform_update).
+    limited_member_write = True
 
     def perform_destroy(self, instance):
-        """Reporter or Admin can delete an issue — matching real Jira."""
-        from projects.models import ProjectMembership
-        user = self.request.user
-        is_reporter = instance.reporter == user
-        is_admin = instance.project.memberships.filter(
-            user=user, role=ProjectMembership.Role.ADMIN
-        ).exists()
-        if not (is_reporter or is_admin):
-            raise PermissionDenied("Only the issue reporter or a project Admin can delete this issue.")
+        """Only org Admins delete tasks. Managers create and edit; Members change status/resolution only."""
+        if not is_org_admin(self.request.user):
+            raise PermissionDenied("Only Admins can delete tasks.")
         instance.delete()
 
     def get_queryset(self):
-        # Visibility: only issues in projects the user is a member of.
-        # Optional query params for filtering: ?status=, ?assignee=, ?priority=, ?project=
-        qs = Issue.objects.filter(project__memberships__user=self.request.user).distinct()
+        # Visibility: only issues in projects the user can see (admins: all of them).
+        # Optional filters, combinable. Most take a comma-separated list (?status=TODO,IN_PROGRESS):
+        #   status, priority, project, assignee (ids, or "none" for unassigned), reporter (ids),
+        #   q (text in the title), label
+        qs = (
+            Issue.objects.filter(visible_projects_q(self.request.user, "project__"))
+            .select_related("project", "reporter", "assignee")
+            .distinct()
+        )
         params = self.request.query_params
-        if params.get("project"):
-            qs = qs.filter(project_id=params["project"])
-        if params.get("status"):
-            qs = qs.filter(status=params["status"])
-        if params.get("assignee"):
-            qs = qs.filter(assignee_id=params["assignee"])
-        if params.get("priority"):
-            qs = qs.filter(priority=params["priority"])
+
+        def values(name):
+            return [v.strip() for v in params.get(name, "").split(",") if v.strip()]
+
+        def ids(name):
+            return [v for v in values(name) if v.isdigit()]
+
+        if values("project"):
+            qs = qs.filter(project_id__in=ids("project"))
+        if values("status"):
+            qs = qs.filter(status__in=values("status"))
+        if values("priority"):
+            qs = qs.filter(priority__in=values("priority"))
+        if values("assignee"):
+            cond = Q(assignee_id__in=ids("assignee"))
+            if "none" in values("assignee"):
+                cond |= Q(assignee__isnull=True)
+            qs = qs.filter(cond)
+        if values("reporter"):
+            qs = qs.filter(reporter_id__in=ids("reporter"))
+        if params.get("q", "").strip():
+            qs = qs.filter(title__icontains=params["q"].strip())
         if params.get("label"):
             qs = qs.filter(labels__id=params["label"])
         return qs
@@ -104,28 +188,48 @@ class IssueViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         project = serializer.validated_data["project"]
-        if not project.memberships.filter(user=self.request.user).exists():
+        if not has_project_access(self.request.user, project):
             raise PermissionDenied("You are not a member of this project.")
+        if org_role(self.request.user) == "MEMBER":
+            raise PermissionDenied("Members cannot create issues.")
 
-        # Only ADMINs can assign to others when creating — Members can self-assign
+        # Only admins/managers can assign to others when creating — others can self-assign
         if "assignee_id" in self.request.data and self.request.data["assignee_id"]:
-            is_admin = project.memberships.filter(
-                user=self.request.user, role="ADMIN"
-            ).exists()
+            is_admin = is_project_admin(self.request.user, project)
             is_self = str(self.request.data["assignee_id"]) == str(self.request.user.id)
             if not is_admin and not is_self:
                 raise PermissionDenied("Members can only assign issues to themselves.")
 
-        instance = serializer.save(reporter=self.request.user)
+        # Reporter defaults to whoever is creating the issue; a different one must belong to the project.
+        reporter = serializer.validated_data.pop("reporter", None) or self.request.user
+        if not has_project_access(reporter, project) or not reporter.is_active:
+            raise ValidationError({"reporter_id": ["The reporter must be an active member of this project."]})
+
+        instance = serializer.save(reporter=reporter)
         try:
             if instance.assignee:
                 _notify_assignee(instance, self.request.user)
         except Exception as e:
             print(f"[Assignment notification error]: {e}")
+        try:
+            _notify_issue_mentions(
+                instance, self.request.user, [instance.title, instance.description],
+                skip_users={instance.assignee} if instance.assignee else (),
+            )
+        except Exception as e:
+            print(f"[Mention notification error]: {e}")
 
     def perform_update(self, serializer):
+        if org_role(self.request.user) == "MEMBER":
+            blocked = set(self.request.data.keys()) - MEMBER_EDITABLE_ISSUE_FIELDS
+            if blocked:
+                raise PermissionDenied(
+                    "Members can only change an issue's status and resolution."
+                )
         old_instance = self.get_object()
+        serializer.validated_data.pop("reporter", None)  # reporter is only chosen when the issue is created
         old_status = old_instance.status
+        old_title, old_description = old_instance.title, old_instance.description
         old_priority = old_instance.priority
         old_assignee_id = old_instance.assignee_id
 
@@ -134,14 +238,23 @@ class IssueViewSet(viewsets.ModelViewSet):
             new_assignee_id = serializer.validated_data.get("assignee_id")
             if new_assignee_id != old_assignee_id:
                 project = old_instance.project
-                is_admin = project.memberships.filter(
-                    user=self.request.user, role="ADMIN"
-                ).exists()
+                is_admin = is_project_admin(self.request.user, project)
                 is_self_assign = (new_assignee_id == self.request.user.id) or (new_assignee_id is None and old_assignee_id == self.request.user.id)
                 if not is_admin and not is_self_assign:
                     raise PermissionDenied("Members can only assign issues to themselves. Only Admins can assign to others.")
 
         instance = serializer.save()
+
+        # @mentions that are new in the summary / description
+        try:
+            already = {n.lower() for n in MENTION_RE.findall(f"{old_title}\n{old_description}")}
+            changed = [x for x, old in ((instance.title, old_title), (instance.description, old_description)) if x != old]
+            _notify_issue_mentions(
+                instance, self.request.user, changed, exclude_names=already,
+                skip_users={instance.assignee} if instance.assignee and old_assignee_id != instance.assignee_id else (),
+            )
+        except Exception as e:
+            print(f"[Mention notification error]: {e}")
 
         # Write activity log entries for fields that actually changed
         if old_status != instance.status:
@@ -170,14 +283,14 @@ class IssueViewSet(viewsets.ModelViewSet):
 
 class CommentViewSet(viewsets.ModelViewSet):
     serializer_class = CommentSerializer
-    permission_classes = [permissions.IsAuthenticated, IsProjectMemberOrAbove]
+    permission_classes = [permissions.IsAuthenticated, LimitedMemberReadOnly, IsProjectMemberOrAbove]
 
     def get_queryset(self):
-        return Comment.objects.filter(issue__project__memberships__user=self.request.user).distinct()
+        return Comment.objects.filter(visible_projects_q(self.request.user, "issue__project__")).distinct()
 
     def perform_create(self, serializer):
         issue = serializer.validated_data["issue"]
-        if not issue.project.memberships.filter(user=self.request.user).exists():
+        if not has_project_access(self.request.user, issue.project):
             raise PermissionDenied("You are not a member of this project.")
         comment = serializer.save(author=self.request.user)
         try:
@@ -194,12 +307,9 @@ class CommentViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         """Only the comment author or a project Admin can delete a comment."""
-        from projects.models import ProjectMembership
         user = self.request.user
         is_author = instance.author == user
-        is_admin = instance.issue.project.memberships.filter(
-            user=user, role=ProjectMembership.Role.ADMIN
-        ).exists()
+        is_admin = is_project_admin(user, instance.issue.project)
         if not is_author and not is_admin:
             raise PermissionDenied("You can only delete your own comments.")
         instance.delete()
@@ -248,7 +358,7 @@ def _notify_on_comment(comment, commenter):
         user = User.objects.filter(username__iexact=username).first()
         if not user or user == commenter:
             continue
-        if not issue.project.memberships.filter(user=user).exists():
+        if not has_project_access(user, issue.project):
             continue
         mention_set.add(user)
 
@@ -307,18 +417,18 @@ def _notify_on_comment(comment, commenter):
 class LabelViewSet(viewsets.ModelViewSet):
     queryset = Label.objects.all()
     serializer_class = LabelSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, LimitedMemberReadOnly]
 
 
 class AttachmentViewSet(viewsets.ModelViewSet):
     serializer_class = AttachmentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, LimitedMemberReadOnly]
     parser_classes = [MultiPartParser, FormParser]
     http_method_names = ["get", "post", "delete", "head", "options"]
 
     def get_queryset(self):
         qs = IssueAttachment.objects.filter(
-            issue__project__memberships__user=self.request.user
+            visible_projects_q(self.request.user, "issue__project__")
         ).distinct()
         issue_id = self.request.query_params.get("issue")
         if issue_id:
@@ -327,7 +437,7 @@ class AttachmentViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         issue = serializer.validated_data["issue"]
-        if not issue.project.memberships.filter(user=self.request.user).exists():
+        if not has_project_access(self.request.user, issue.project):
             raise PermissionDenied("You are not a member of this project.")
         serializer.save(uploaded_by=self.request.user)
 

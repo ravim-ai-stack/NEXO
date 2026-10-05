@@ -1,13 +1,16 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
     AutomationRuleViewSet,
+    CalendarEntryViewSet,
     ProjectDocViewSet,
     ProjectViewSet,
     SavedFilterViewSet,
     SprintViewSet,
     WorkflowStateViewSet,
     WorkflowTransitionViewSet,
+    cron_reminders,
 )
 
 router = DefaultRouter()
@@ -18,5 +21,6 @@ router.register("sprints", SprintViewSet, basename="sprint")
 router.register("workflow-states", WorkflowStateViewSet, basename="workflow-state")
 router.register("workflow-transitions", WorkflowTransitionViewSet, basename="workflow-transition")
 router.register("saved-filters", SavedFilterViewSet, basename="saved-filter")
+router.register("calendar-entries", CalendarEntryViewSet, basename="calendar-entry")
 
-urlpatterns = router.urls
+urlpatterns = [path("cron/reminders/", cron_reminders, name="cron-reminders")] + router.urls

@@ -1,7 +1,9 @@
 import { useEffect, useState, useMemo } from "react";
+import { userLabel } from "../utils/userLabel";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import api from "../api/client";
 import Navbar from "../components/Navbar";
+import ProjectCard from "../components/ProjectCard";
 import { useAuth } from "../context/AuthContext";
 
 // ── Pie chart — pure SVG donut ──
@@ -88,28 +90,29 @@ export default function Dashboard() {
   const [selectedProjectId, setSelectedProjectId] = useState("ALL");
   const [projectIssues, setProjectIssues] = useState([]);
   const [issuesLoading, setIssuesLoading] = useState(false);
+  const [allProjects, setAllProjects] = useState([]);
 
   // Load dashboard data once
   useEffect(() => {
     api.get("/auth/dashboard/")
       .then((res) => {
         setData(res.data);
-        // If URL has ?project=id, auto-select it
+        // If URL has ?project=id, open that project's dashboard
         const urlProjectId = searchParams.get("project");
-        if (urlProjectId) {
-          setSelectedProjectId(urlProjectId);
-        } else if (res.data.my_projects.length === 1) {
-          setSelectedProjectId(String(res.data.my_projects[0].id));
-        }
+        if (urlProjectId) setSelectedProjectId(urlProjectId);
       })
       .catch(() => setError("Could not load dashboard data."))
       .finally(() => setLoading(false));
   }, []);
 
-  // Sync selected project when URL param changes
+  // Project cards for the landing view
   useEffect(() => {
-    const urlProjectId = searchParams.get("project");
-    if (urlProjectId) setSelectedProjectId(urlProjectId);
+    api.get("/projects/").then((res) => setAllProjects(res.data)).catch(() => {});
+  }, []);
+
+  // Sync selected project with the URL (no ?project= means the project list view)
+  useEffect(() => {
+    setSelectedProjectId(searchParams.get("project") || "ALL");
   }, [searchParams]);
 
   // Load all issues for the selected project
@@ -178,9 +181,11 @@ export default function Dashboard() {
             </p>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <Link to="/projects" className="jira-btn-secondary-sm" style={{ textDecoration: "none", padding: "8px 16px" }}>
-              All Projects
-            </Link>
+            {selectedProject && (
+              <Link to="/dashboard" className="jira-btn-secondary-sm" style={{ textDecoration: "none", padding: "8px 16px" }}>
+                All Projects
+              </Link>
+            )}
             {selectedProject && (
               <button
                 className="jira-btn-primary-sm"
@@ -209,12 +214,27 @@ export default function Dashboard() {
           </div>
         )}
 
-        {data && (
+        {data && selectedProjectId === "ALL" && (
+          <div className="jira-projects-grid" style={{ padding: "0 24px 32px" }}>
+            {allProjects.map((p) => (
+              <ProjectCard key={p.id} project={p} to={`/dashboard?project=${p.id}`} />
+            ))}
+            {allProjects.length === 0 && (
+              <div className="jira-empty-projects-card">
+                <div className="jira-project-icon-large">📂</div>
+                <h3>No projects yet</h3>
+                <p>Create your first project from the Projects page.</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {data && selectedProjectId !== "ALL" && (
           <div className="db-grid">
 
             {/* ── 1. Issues by Status (project-scoped) ── */}
             <Card
-              title={selectedProjectId === "ALL" ? "My Assigned Issues" : "Issues by Status"}
+              title={selectedProjectId === "ALL" ? "My Assigned Issues" : "Task by Status"}
               badge={projBadge}
               icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="9" x2="9" y2="21"/></svg>}
               count={selectedProjectId === "ALL"
@@ -252,7 +272,7 @@ export default function Dashboard() {
                               <span className="db-issue-key">{issue.project_key || selectedProject?.key}-{issue.id}</span>
                               <span className="db-issue-title">{issue.title}</span>
                               {issue.assignee && (
-                                <span className="db-issue-assignee" title={issue.assignee.username}>
+                                <span className="db-issue-assignee" title={userLabel(issue.assignee)}>
                                   {issue.assignee.username.substring(0, 2).toUpperCase()}
                                 </span>
                               )}

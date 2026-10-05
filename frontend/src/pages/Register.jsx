@@ -66,7 +66,7 @@ export default function Register() {
         setStep(2);
         setResendCooldown(30);
       } else {
-        navigate("/projects");
+        navigate("/dashboard");
       }
     } catch (err) {
       const emailErr = err?.response?.data?.email?.[0];
@@ -97,7 +97,7 @@ export default function Register() {
     setLoading(true);
     try {
       await verifyCode(email.trim().toLowerCase(), cleanCode, "REGISTRATION");
-      navigate("/projects");
+      navigate("/dashboard");
     } catch (err) {
       const msg = err?.response?.data?.detail || "Invalid or expired verification code. Please try again.";
       setError(msg);

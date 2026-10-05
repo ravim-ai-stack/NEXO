@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { userLabel } from "../utils/userLabel";
 import api from "../api/client";
 import IssueModal from "./IssueModal";
 import { IssueTypeIcon, PriorityIcon, SprintGoalIcon } from "./Icons";
@@ -19,10 +20,11 @@ const PRIORITY_LABELS = {
   LOW: "Low",
 };
 
-export default function BacklogView({ project, issues = [], members = [], onRefresh, currentUser, isViewer = false, isAdmin = false }) {
+export default function BacklogView({ project, issues = [], members = [], onRefresh, currentUser, role: roleProp, isViewer = false, isAdmin = false }) {
   // Derive role string for can() calls
-  const role = isAdmin ? "ADMIN" : isViewer ? "VIEWER" : "MEMBER";
+  const role = roleProp || (isAdmin ? "ADMIN" : readOnly ? "VIEWER" : "MANAGER");
   const can = (action, ctx = {}) => canPermission(role, action, ctx);
+  const readOnly = !can(ACTIONS.MOVE_ISSUE); // Viewers and Members: look, don't touch
   const [sprints, setSprints] = useState([]);
   const [selectedIssueId, setSelectedIssueId] = useState(null);
 
@@ -318,9 +320,9 @@ export default function BacklogView({ project, issues = [], members = [], onRefr
           <div
             key={sprint.id}
             className={`jira-sprint-section ${sprint.status === "ACTIVE" ? "active-sprint" : ""} ${dragOverSection === sprint.id ? "drag-over" : ""}`}
-            onDragOver={isViewer ? undefined : (e) => { e.preventDefault(); setDragOverSection(sprint.id); }}
-            onDragLeave={isViewer ? undefined : () => setDragOverSection(null)}
-            onDrop={isViewer ? undefined : () => handleDrop(sprint.id)}
+            onDragOver={readOnly ? undefined : (e) => { e.preventDefault(); setDragOverSection(sprint.id); }}
+            onDragLeave={readOnly ? undefined : () => setDragOverSection(null)}
+            onDrop={readOnly ? undefined : () => handleDrop(sprint.id)}
           >
             {/* Sprint Header */}
             <div className="jira-sprint-header">
@@ -420,7 +422,7 @@ export default function BacklogView({ project, issues = [], members = [], onRefr
                 <div className="jira-backlog-issue-list">
                   {sprintIssues.length === 0 && (
                     <div className="jira-backlog-empty-drop">
-                      {isViewer ? "No issues in this sprint." : "Drag issues here to add them to this sprint"}
+                      {readOnly ? "No issues in this sprint." : "Drag issues here to add them to this sprint"}
                     </div>
                   )}
                   {sprintIssues.map((issue) => (
@@ -429,7 +431,7 @@ export default function BacklogView({ project, issues = [], members = [], onRefr
                       issue={issue}
                       projectKey={project?.key}
                       onOpen={() => setSelectedIssueId(issue.id)}
-                      onDragStart={isViewer ? undefined : () => setDraggingIssueId(issue.id)}
+                      onDragStart={readOnly ? undefined : () => setDraggingIssueId(issue.id)}
                     />
                   ))}
                 </div>
@@ -487,7 +489,7 @@ export default function BacklogView({ project, issues = [], members = [], onRefr
             <div className="jira-backlog-issue-list">
               {backlogIssues.length === 0 && (
                 <div className="jira-backlog-empty-drop">
-                  {isViewer ? "No issues in backlog." : "No issues in backlog. Create one below or drag issues here from sprints."}
+                  {readOnly ? "No issues in backlog." : "No issues in backlog. Create one below or drag issues here from sprints."}
                 </div>
               )}
               {backlogIssues.map((issue) => (
@@ -496,7 +498,7 @@ export default function BacklogView({ project, issues = [], members = [], onRefr
                   issue={issue}
                   projectKey={project?.key}
                   onOpen={() => setSelectedIssueId(issue.id)}
-                  onDragStart={isViewer ? undefined : () => setDraggingIssueId(issue.id)}
+                  onDragStart={readOnly ? undefined : () => setDraggingIssueId(issue.id)}
                 />
               ))}
             </div>
@@ -621,8 +623,7 @@ export default function BacklogView({ project, issues = [], members = [], onRefr
           projectKey={project?.key}
           members={members}
           currentUser={currentUser}
-          isViewer={isViewer}
-          isAdmin={isAdmin}
+          role={role}
           onClose={() => setSelectedIssueId(null)}
           onUpdate={refresh}
         />
@@ -663,7 +664,7 @@ function IssueRow({ issue, projectKey, onOpen, onDragStart }) {
           {issue.status === "IN_PROGRESS" ? "In Progress" : issue.status === "DONE" ? "Done" : "To Do"}
         </span>
         {issue.assignee ? (
-          <div className="jira-avatar-circle small" title={issue.assignee.username}>
+          <div className="jira-avatar-circle small" title={userLabel(issue.assignee)}>
             {issue.assignee.username.substring(0, 2).toUpperCase()}
           </div>
         ) : (

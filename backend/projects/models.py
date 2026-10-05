@@ -202,3 +202,38 @@ class SavedFilter(models.Model):
 
     def __str__(self):
         return f"{self.owner} — {self.name} [{self.project.key}]"
+
+
+class CalendarEntry(models.Model):
+    """
+    Something put on a project's calendar by clicking a day: a reminder, task, event...
+    Everyone involved (the creator, the people picked as assignees, and anyone @mentioned)
+    is told when they are added, and again when the date (and optional time) arrives.
+    """
+    class Kind(models.TextChoices):
+        REMINDER = "REMINDER", "Reminder"
+        TASK = "TASK", "Task"
+        EVENT = "EVENT", "Event"
+        MEETING = "MEETING", "Meeting"
+        OTHER = "OTHER", "Other"
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="calendar_entries")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="created_calendar_entries"
+    )
+    kind = models.CharField(max_length=10, choices=Kind.choices, default=Kind.REMINDER)
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    date = models.DateField()
+    time = models.TimeField(null=True, blank=True, help_text="Optional. Without it the reminder goes out in the morning.")
+    participants = models.ManyToManyField(settings.AUTH_USER_MODEL, blank=True, related_name="calendar_entries")
+    # Set (atomically) when the "it's today" notification has been sent, so it only ever goes out once.
+    due_notified_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["date", "time", "id"]
+
+    def __str__(self):
+        return f"{self.project.key} {self.date} — {self.title}"

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { userLabel } from "../utils/userLabel";
 import api from "../api/client";
 import MentionTextarea from "./MentionTextarea";
 import MarkdownRenderer from "./MarkdownRenderer";
@@ -6,13 +7,17 @@ import { FileIcon, GitBranchIcon, PullRequestIcon, AttachmentIcon, IssueTypeIcon
 import { can as canPermission, ACTIONS } from "../permissions";
 import { useAuth } from "../context/AuthContext";
 
-export default function IssueModal({ issueId, projectKey, members = [], currentUser: currentUserProp, isViewer = false, isAdmin = false, onClose, onUpdate }) {
+export default function IssueModal({ issueId, projectKey, members = [], currentUser: currentUserProp, role: roleProp, isViewer = false, isAdmin = false, onClose, onUpdate }) {
   const { user: authUser } = useAuth();
   // Use prop if passed, fall back to auth context
   const currentUser = currentUserProp || authUser;
   // Derive role for can() — single source of truth
-  const role = isAdmin ? "ADMIN" : isViewer ? "VIEWER" : "MEMBER";
+  const role = roleProp || (isAdmin ? "ADMIN" : isViewer ? "VIEWER" : "MANAGER");
   const can = (action, ctx = {}) => canPermission(role, action, ctx);
+  // Members (and Viewers) can't edit fields; Members may still change status and resolution.
+  const readOnly = !can(ACTIONS.EDIT_ISSUE);
+  const statusLocked = !can(ACTIONS.CHANGE_ISSUE_STATUS);
+  const resolutionLocked = !can(ACTIONS.CHANGE_RESOLUTION);
   const [issue, setIssue] = useState(null);
   const [newComment, setNewComment] = useState("");
   const [tab, setTab] = useState("comments");
@@ -54,49 +59,40 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
     load();
   }, [issueId]);
 
-  async function updateField(field, value) {
+  // Save one or several fields in a single request (so paired fields like status + resolution can't race).
+  async function updateFields(payload) {
     try {
-      const res = await api.patch(`/issues/${issueId}/`, { [field]: value });
+      const res = await api.patch(`/issues/${issueId}/`, payload);
       setIssue(res.data);
       onUpdate && onUpdate();
+      return true;
     } catch (err) {
-      console.error(`Failed to update ${field}`, err);
+      const data = err?.response?.data;
+      const first = data && typeof data === "object" ? Object.values(data).flat()[0] : null;
+      alert(data?.detail || (typeof first === "string" ? first : "Could not save your change. Please try again."));
+      return false;
     }
   }
+  const updateField = (field, value) => updateFields({ [field]: value });
 
+  // Each Save closes its editor only when the save really went through; failures show the server's message.
   async function handleSaveTitle(e) {
     e?.preventDefault();
     if (!titleVal.trim()) return;
-    try {
-      const res = await api.patch(`/issues/${issueId}/`, { title: titleVal.trim() });
-      setIssue(res.data);
-      setIsEditingTitle(false);
-      onUpdate && onUpdate();
-    } catch (err) {
-      alert("Failed to save title.");
-    }
+    if (await updateFields({ title: titleVal.trim() })) setIsEditingTitle(false);
   }
 
   async function handleSaveDesc(e) {
     e?.preventDefault();
-    try {
-      const res = await api.patch(`/issues/${issueId}/`, { description: descVal });
-      setIssue(res.data);
-      setIsEditingDesc(false);
-      onUpdate && onUpdate();
-    } catch (err) {
-      alert("Failed to save description.");
-    }
+    if (await updateFields({ description: descVal })) setIsEditingDesc(false);
   }
 
   async function handleSaveFigma() {
-    await updateField("figma_url", figmaUrl.trim());
-    setIsEditingFigma(false);
+    if (await updateField("figma_url", figmaUrl.trim())) setIsEditingFigma(false);
   }
 
   async function handleSaveGithub() {
-    await updateField("github_pr", githubPr.trim());
-    setIsEditingGithub(false);
+    if (await updateField("github_pr", githubPr.trim())) setIsEditingGithub(false);
   }
 
   function handleLoadSampleFigma() {
@@ -227,7 +223,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
   if (!issue) return null;
 
   const keyDisplay = `${projectKey || "KAN"}-${issue.id}`;
-  const reporterName = issue.reporter?.username || "Project Member";
+  const reporterName = userLabel(issue.reporter) || "Project Member";
   const reporterInitials = reporterName.substring(0, 2).toUpperCase();
 
   // Slugified branch name
@@ -261,8 +257,8 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
           </div>
 
           <div className="jira-drawer-actions">
-            {/* Delete — shown for Admin and Members (backend enforces reporter check) */}
-            {!isViewer && (
+            {/* Delete — org Admins only (the backend enforces it too) */}
+            {can(ACTIONS.DELETE_ISSUE) && (
               <button className="jira-btn-icon-plain" onClick={handleDeleteIssue} title="Delete issue">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#de350b" strokeWidth="2">
                   <polyline points="3 6 5 6 21 6"/>
@@ -284,7 +280,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
           {/* Left Main Column */}
           <div className="jira-drawer-left">
             {/* Title */}
-            {isEditingTitle && !isViewer ? (
+            {isEditingTitle && !readOnly ? (
               <div style={{ marginBottom: 16 }}>
                 <input
                   type="text"
@@ -306,12 +302,12 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
               <h1
                 className="jira-drawer-title"
                 onClick={() => {
-                  if (isViewer) return;
+                  if (readOnly) return;
                   setTitleVal(issue.title || "");
                   setIsEditingTitle(true);
                 }}
-                title={isViewer ? undefined : "Click to edit summary"}
-                style={{ cursor: isViewer ? "default" : "pointer" }}
+                title={readOnly ? undefined : "Click to edit summary"}
+                style={{ cursor: readOnly ? "default" : "pointer" }}
               >
                 {issue.title}
               </h1>
@@ -320,7 +316,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
             {/* Description */}
             <div className="jira-drawer-section">
               <label className="jira-drawer-label">Description</label>
-              {isEditingDesc && !isViewer ? (
+              {isEditingDesc && !readOnly ? (
                 <div>
                   <textarea
                     className="jira-textarea"
@@ -347,17 +343,17 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                 <div
                   className="jira-desc-preview"
                   onClick={() => {
-                    if (isViewer) return;
+                    if (readOnly) return;
                     setDescVal(issue.description || "");
                     setIsEditingDesc(true);
                   }}
-                  title={isViewer ? undefined : "Click to edit description"}
-                  style={{ cursor: isViewer ? "default" : "pointer" }}
+                  title={readOnly ? undefined : "Click to edit description"}
+                  style={{ cursor: readOnly ? "default" : "pointer" }}
                 >
                   {issue.description ? (
                     <div style={{ whiteSpace: "pre-wrap" }}>{issue.description}</div>
                   ) : (
-                    <span className="jira-placeholder-text">{isViewer ? "No description." : "Add a description..."}</span>
+                    <span className="jira-placeholder-text">{readOnly ? "No description." : "Add a description..."}</span>
                   )}
                 </div>
               )}
@@ -371,7 +367,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                   <span>Figma Design Preview</span>
                   {issue.figma_url && <span className="jira-connected-pill">Connected</span>}
                 </label>
-                {!isEditingFigma && !isViewer && (
+                {!isEditingFigma && !readOnly && (
                   <button
                     className="jira-btn-link-sm"
                     onClick={() => setIsEditingFigma(true)}
@@ -440,7 +436,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                   <GitBranchIcon size={14} />
                   <span>Development (GitHub)</span>
                 </label>
-                {!isEditingGithub && !isViewer && (
+                {!isEditingGithub && !readOnly && (
                   <button
                     className="jira-btn-link-sm"
                     onClick={() => setIsEditingGithub(true)}
@@ -608,7 +604,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                           {att.filename}
                         </a>
                         <span className="jira-attachment-meta">
-                          {formatBytes(att.file_size)} · {att.uploaded_by?.username} · {new Date(att.uploaded_at).toLocaleDateString()}
+                          {formatBytes(att.file_size)} · {userLabel(att.uploaded_by)} · {new Date(att.uploaded_at).toLocaleDateString()}
                         </span>
                       </div>
                       {can(ACTIONS.DELETE_ATTACHMENT, { isOwnAttachment: att.uploaded_by?.id === currentUser?.id }) && (
@@ -667,7 +663,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                       </div>
                       <div className="jira-comment-body">
                         <div className="jira-comment-meta">
-                          <strong>{c.author?.username}</strong>
+                          <strong>{userLabel(c.author)}</strong>
                           <span className="jira-comment-time">{new Date(c.created_at).toLocaleString()}</span>
                           {c.updated_at !== c.created_at && (
                             <span className="jira-comment-edited">(edited)</span>
@@ -733,7 +729,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                 <div className="jira-activity-log-list">
                   {issue.activity_log?.map((a) => (
                     <div key={a.id} className="jira-activity-item">
-                      <strong>{a.actor?.username || "User"}</strong> changed <em>{a.field_changed}</em> from{" "}
+                      <strong>{userLabel(a.actor) || "User"}</strong> changed <em>{a.field_changed}</em> from{" "}
                       <code>{a.old_value || "none"}</code> to <code>{a.new_value || "none"}</code>
                       <span className="jira-activity-time">{new Date(a.created_at).toLocaleTimeString()}</span>
                     </div>
@@ -751,7 +747,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
             {/* Status Field */}
             <div className="jira-drawer-field">
               <label className="jira-drawer-field-label">Status</label>
-              {isViewer ? (
+              {statusLocked ? (
                 <div className="jira-drawer-field-readonly">
                   <span>{issue.status === "IN_PROGRESS" ? "In Progress" : issue.status === "DONE" ? "Done" : "To Do"}</span>
                 </div>
@@ -767,7 +763,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
             {/* Resolution Field */}
             <div className="jira-drawer-field">
               <label className="jira-drawer-field-label">Resolution</label>
-              {isViewer ? (
+              {resolutionLocked ? (
                 <div className="jira-drawer-field-readonly"><span>{issue.resolution || "Unresolved"}</span></div>
               ) : (
                 <select
@@ -775,8 +771,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                   value={issue.resolution || (issue.status === "DONE" ? "Resolved" : "Unresolved")}
                   onChange={(e) => {
                     const val = e.target.value;
-                    if (val === "Resolved" || val === "Solved") { updateField("resolution", val); updateField("status", "DONE"); }
-                    else { updateField("resolution", val); }
+                    updateFields(val === "Resolved" || val === "Solved" ? { resolution: val, status: "DONE" } : { resolution: val });
                   }}
                 >
                   <option value="Unresolved">Unresolved</option>
@@ -790,7 +785,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
             {/* Priority Field */}
             <div className="jira-drawer-field">
               <label className="jira-drawer-field-label">Priority</label>
-              {isViewer ? (
+              {readOnly ? (
                 <div className="jira-drawer-field-readonly"><span>{issue.priority}</span></div>
               ) : (
                 <select className="jira-select" value={issue.priority} onChange={(e) => updateField("priority", e.target.value)}>
@@ -805,12 +800,12 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
             {/* Assignee Field */}
             <div className="jira-drawer-field">
               <label className="jira-drawer-field-label">Assignee</label>
-              {isViewer ? (
+              {readOnly ? (
                 <div className="jira-drawer-field-readonly">
                   {issue.assignee ? (
                     <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <div className="jira-avatar-circle small">{issue.assignee.username.substring(0, 2).toUpperCase()}</div>
-                      {issue.assignee.username}
+                      {userLabel(issue.assignee)}
                     </span>
                   ) : (
                     <span style={{ color: "#97A0AF" }}>Unassigned</span>
@@ -827,7 +822,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                   <option value="">Unassigned</option>
                   {members.map((m) => (
                     <option key={m.user?.id || m.id} value={m.user?.id || m.id}>
-                      {m.user?.username || m.username}
+                      {m.user ? userLabel(m.user) : m.username}
                     </option>
                   ))}
                 </select>
@@ -841,7 +836,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
                   <option value="">Unassigned</option>
                   {members.map((m) => (
                     <option key={m.user?.id || m.id} value={m.user?.id || m.id}>
-                      {m.user?.username || m.username}
+                      {m.user ? userLabel(m.user) : m.username}
                     </option>
                   ))}
                 </select>
@@ -851,7 +846,7 @@ export default function IssueModal({ issueId, projectKey, members = [], currentU
             {/* Due Date Field */}
             <div className="jira-drawer-field">
               <label className="jira-drawer-field-label">Due Date</label>
-              {isViewer ? (
+              {readOnly ? (
                 <div className="jira-drawer-field-readonly"><span>{issue.due_date || "Not set"}</span></div>
               ) : (
                 <input type="date" className="jira-input" value={issue.due_date || ""} onChange={(e) => updateField("due_date", e.target.value || null)} />

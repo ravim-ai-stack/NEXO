@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import api from "../api/client";
@@ -23,30 +23,28 @@ export default function Login() {
   const [forgotLoading, setForgotLoading] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
 
-  const { login } = useAuth();
+  // Unverified-account OTP step state
+  const [unverifiedEmail, setUnverifiedEmail] = useState("");
+  const [verifyOtp, setVerifyOtp] = useState("");
+  const [verifyError, setVerifyError] = useState("");
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [resendVerifyCooldown, setResendVerifyCooldown] = useState(0);
+  const [resendVerifySuccess, setResendVerifySuccess] = useState("");
+
+  const { login, verifyCode } = useAuth();
   const navigate = useNavigate();
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    if (!email.trim() || !password) {
-      setError("Please enter both email and password");
-      return;
-    }
-    setError("");
-    setLoading(true);
-    try {
-      await login(email.trim().toLowerCase(), password);
-      navigate("/projects");
-    } catch (err) {
-      const msg =
-        err?.response?.data?.non_field_errors?.[0] ||
-        err?.response?.data?.detail ||
-        "Invalid email or password. Please check your credentials.";
-      setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  }
+  useEffect(() => {
+    if (resendVerifyCooldown <= 0) return;
+    const t = setTimeout(() => setResendVerifyCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendVerifyCooldown]);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = setTimeout(() => setResendCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendCooldown]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -58,7 +56,7 @@ export default function Login() {
     setLoading(true);
     try {
       await login(email.trim().toLowerCase(), password);
-      navigate("/projects");
+      navigate("/dashboard");
     } catch (err) {
       // Account exists but email not verified yet
       if (err?.response?.status === 403 && err?.response?.data?.unverified) {
@@ -88,7 +86,7 @@ export default function Login() {
     setVerifyLoading(true);
     try {
       await verifyCode(unverifiedEmail, cleanCode, "REGISTRATION");
-      navigate("/projects");
+      navigate("/dashboard");
     } catch (err) {
       const msg = err?.response?.data?.detail || "Invalid or expired code. Please try again.";
       setVerifyError(msg);
@@ -267,7 +265,54 @@ export default function Login() {
               </div>
             )}
 
-            <form onSubmit={handleSubmit} className="jira-auth-form">
+            {unverifiedEmail && (
+              <form onSubmit={handleVerifyOtpSubmit} className="jira-auth-form">
+                <div className="jira-auth-verified-badge">
+                  <span>
+                    Your email isn't verified yet. Enter the 6-digit code sent to <strong>{unverifiedEmail}</strong>
+                  </span>
+                </div>
+                {verifyError && <div className="jira-auth-alert-error"><div className="jira-auth-alert-msg">{verifyError}</div></div>}
+                {resendVerifySuccess && <div className="jira-auth-verified-badge"><span>{resendVerifySuccess}</span></div>}
+                <div className="jira-form-group">
+                  <label className="jira-form-label" htmlFor="verify-otp-input">6-Digit Verification Code</label>
+                  <input
+                    id="verify-otp-input"
+                    type="text"
+                    className="jira-form-input jira-otp-input-field"
+                    placeholder="• • • • • •"
+                    maxLength={6}
+                    value={verifyOtp}
+                    onChange={(e) => setVerifyOtp(e.target.value.replace(/[^0-9]/g, ""))}
+                    autoFocus
+                    required
+                  />
+                </div>
+                <button type="submit" className="jira-auth-submit-btn" disabled={verifyLoading || verifyOtp.length !== 6}>
+                  {verifyLoading ? "Verifying..." : <span>Verify &amp; Log In &rarr;</span>}
+                </button>
+                <div style={{ textAlign: "center", marginTop: 8 }}>
+                  <button
+                    type="button"
+                    className="jira-btn-resend"
+                    onClick={handleResendVerifyCode}
+                    disabled={resendVerifyCooldown > 0 || verifyLoading}
+                  >
+                    {resendVerifyCooldown > 0 ? `Resend code in ${resendVerifyCooldown}s` : "Resend Code"}
+                  </button>
+                  {" "}
+                  <button
+                    type="button"
+                    className="jira-btn-resend"
+                    onClick={() => { setUnverifiedEmail(""); setVerifyOtp(""); setVerifyError(""); setResendVerifySuccess(""); }}
+                  >
+                    Back to login
+                  </button>
+                </div>
+              </form>
+            )}
+
+            <form onSubmit={handleSubmit} className="jira-auth-form" style={unverifiedEmail ? { display: "none" } : undefined}>
               <div className="jira-form-group">
                 <label className="jira-form-label" htmlFor="login-email">
                   Email Address

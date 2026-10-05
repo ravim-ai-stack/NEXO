@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { userLabel } from "../utils/userLabel";
 import api from "../api/client";
 import { useAuth } from "../context/AuthContext";
 
@@ -99,7 +100,7 @@ export default function NotificationsModal({ isOpen, onClose }) {
             </div>
             <div className="jira-notification-content">
               <p className="jira-notification-text">
-                <strong>{n.actor?.username || "System Agent"}</strong> {n.action} <span className="jira-notif-target">{n.target}</span>
+                <strong>{userLabel(n.actor) || "System Agent"}</strong> {n.action} <span className="jira-notif-target">{n.target}</span>
               </p>
               <span className="jira-notification-time">
                 {new Date(n.created_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

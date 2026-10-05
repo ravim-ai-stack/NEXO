@@ -2,7 +2,11 @@
  * NEXO — Role-Based Permission System
  * Single source of truth for all access control decisions.
  *
- * Roles:   ADMIN | MEMBER | VIEWER
+ * Roles (the user's effective role inside a project — `project.my_role`):
+ *   ADMIN    org Admin: everything, in every project
+ *   MANAGER  org Manager: everything inside their assigned projects, except deleting projects and tasks
+ *   MEMBER   org Member: read-only, except changing an issue's status and resolution
+ *   VIEWER   assigned to a project as a Viewer: read-only
  * Usage:   can(role, action, context?)
  *
  * To add a new action:  add it to PERMISSIONS below.
@@ -20,6 +24,7 @@ export const ACTIONS = {
   ASSIGN_ISSUE_OTHERS:        "assign_issue_others",
   CREATE_SUBTASK:             "create_subtask",
   CHANGE_ISSUE_STATUS:        "change_issue_status",
+  CHANGE_RESOLUTION:          "change_resolution",
   ADD_COMMENT:                "add_comment",
   EDIT_OWN_COMMENT:           "edit_own_comment",
   DELETE_OWN_COMMENT:         "delete_own_comment",
@@ -50,94 +55,80 @@ export const ACTIONS = {
 // ─────────────────────────────────────────────────────────────
 const PERMISSIONS = {
   [ACTIONS.CREATE_ISSUE]: {
-    ADMIN: true, MEMBER: true, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.EDIT_ISSUE]: {
-    ADMIN: true, MEMBER: true, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
+  // Only org Admins delete tasks; Managers create and edit them.
   [ACTIONS.DELETE_ISSUE]: {
-    ADMIN: true,
-    MEMBER: "conditional",
-    VIEWER: false,
-    // Member can only delete if they are the reporter
-    check: (ctx) => ctx?.isReporter === true,
+    ADMIN: true, MANAGER: false, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.ASSIGN_ISSUE_SELF]: {
-    // Members can self-assign — claim unassigned issues to work on them
-    ADMIN: true, MEMBER: true, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.ASSIGN_ISSUE_OTHERS]: {
-    ADMIN: true, MEMBER: false, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.CREATE_SUBTASK]: {
-    // Same tier as create_issue — breaking down work is core daily activity
-    ADMIN: true, MEMBER: true, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
+  // Members may move work along: status and resolution only.
   [ACTIONS.CHANGE_ISSUE_STATUS]: {
-    ADMIN: true,
-    MEMBER: "conditional",
-    VIEWER: false,
-    // Member can only change status if they are the assignee
-    check: (ctx) => ctx?.isAssignee === true,
+    ADMIN: true, MANAGER: true, MEMBER: true, VIEWER: false,
+  },
+  [ACTIONS.CHANGE_RESOLUTION]: {
+    ADMIN: true, MANAGER: true, MEMBER: true, VIEWER: false,
   },
   [ACTIONS.ADD_COMMENT]: {
-    ADMIN: true, MEMBER: true, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.EDIT_OWN_COMMENT]: {
-    ADMIN: true,
-    MEMBER: "conditional",
-    VIEWER: false,
-    check: (ctx) => ctx?.isOwnComment === true,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.DELETE_OWN_COMMENT]: {
-    ADMIN: true,
-    MEMBER: "conditional",
-    VIEWER: false,
-    check: (ctx) => ctx?.isOwnComment === true,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.UPLOAD_ATTACHMENT]: {
-    ADMIN: true, MEMBER: true, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.DELETE_ATTACHMENT]: {
-    ADMIN: true,
-    MEMBER: "conditional",
-    VIEWER: false,
-    // Member can only delete their own attachment
-    check: (ctx) => ctx?.isOwnAttachment === true,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.MOVE_ISSUE]: {
-    ADMIN: true, MEMBER: true, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.CREATE_SPRINT]: {
-    ADMIN: true, MEMBER: false, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.START_COMPLETE_SPRINT]: {
-    ADMIN: true, MEMBER: false, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.ADD_REMOVE_MEMBERS]: {
-    ADMIN: true, MEMBER: false, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.CHANGE_MEMBER_ROLE]: {
-    ADMIN: true, MEMBER: false, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.EDIT_PROJECT_SETTINGS]: {
-    ADMIN: true, MEMBER: false, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
+  // Only org Admins can delete a project; Managers can create but not delete.
   [ACTIONS.DELETE_PROJECT]: {
-    ADMIN: true, MEMBER: false, VIEWER: false,
+    ADMIN: true, MANAGER: false, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.CREATE_PROJECT]: {
-    ADMIN: true, MEMBER: false, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
   [ACTIONS.CONFIGURE_WORKFLOW]: {
-    ADMIN: true, MEMBER: false, VIEWER: false,
+    ADMIN: true, MANAGER: true, MEMBER: false, VIEWER: false,
   },
 };
 
 // ─────────────────────────────────────────────────────────────
 // can(role, action, context?) → boolean
 //
-// @param role     "ADMIN" | "MEMBER" | "VIEWER"
+// @param role     "ADMIN" | "MANAGER" | "MEMBER" | "VIEWER"
 // @param action   one of ACTIONS.*
 // @param context  optional — { isReporter, isOwnComment, isOwnAttachment, isSelf }
 // @returns        true if allowed, false otherwise

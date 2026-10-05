@@ -1,15 +1,32 @@
+import hmac
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
-from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
-from .models import AutomationRule, Project, ProjectDoc, ProjectMembership, Sprint, WorkflowState, WorkflowTransition
+from users.access import (
+    LimitedMemberReadOnly,
+    can_create_project,
+    can_delete_project,
+    effective_project_role,
+    has_project_access,
+    is_project_admin,
+    visible_projects_q,
+)
+from users.models import Notification
+from users.utils import send_project_invite_email
+
+from .models import AutomationRule, CalendarEntry, Project, ProjectDoc, ProjectMembership, Sprint, WorkflowState, WorkflowTransition
 from .models import create_default_workflow, SavedFilter
+from .reminders import local_today, mentioned_users, notify_added, process_due
 from .permissions import IsProjectMember, IsProjectMemberOrAbove
 from .serializers import (
     AutomationRuleSerializer,
+    CalendarEntrySerializer,
     ProjectDocSerializer,
     ProjectMembershipSerializer,
     ProjectSerializer,
@@ -24,13 +41,15 @@ User = get_user_model()
 
 class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
-    permission_classes = [permissions.IsAuthenticated, IsProjectMemberOrAbove]
+    permission_classes = [permissions.IsAuthenticated, LimitedMemberReadOnly, IsProjectMemberOrAbove]
 
     def get_queryset(self):
-        # A user only ever sees projects they're a member of.
-        return Project.objects.filter(memberships__user=self.request.user).distinct()
+        # Admins see every project; everyone else only the projects they're assigned to.
+        return Project.objects.filter(visible_projects_q(self.request.user)).distinct()
 
     def perform_create(self, serializer):
+        if not can_create_project(self.request.user):
+            raise PermissionDenied("Only Admins and Managers can create projects.")
         project = serializer.save(created_by=self.request.user)
         ProjectMembership.objects.create(
             project=project, user=self.request.user, role=ProjectMembership.Role.ADMIN
@@ -38,10 +57,22 @@ class ProjectViewSet(viewsets.ModelViewSet):
         # Seed the default 3-column workflow for this project
         create_default_workflow(project)
 
+    def perform_update(self, serializer):
+        if not is_project_admin(self.request.user, serializer.instance):
+            raise PermissionDenied("Only project admins can change project settings.")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if not can_delete_project(self.request.user):
+            raise PermissionDenied("Only Admins can delete projects.")
+        instance.delete()
+
     @action(detail=True, methods=["post"])
     def add_member(self, request, pk=None):
         """POST {user_id or username/email, role} -> adds or updates user role in this project."""
         project = self.get_object()
+        if not is_project_admin(request.user, project):
+            raise PermissionDenied("Only project admins can add members.")
         user_id = request.data.get("user_id")
         username = request.data.get("username")
         email = request.data.get("email")
@@ -58,6 +89,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
         if not target_user:
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        if target_user.is_deactivated:
+            return Response({"error": "This user is inactive and cannot be added to a project."}, status=status.HTTP_400_BAD_REQUEST)
+
         if role not in [ProjectMembership.Role.ADMIN, ProjectMembership.Role.MEMBER, ProjectMembership.Role.VIEWER]:
             role = ProjectMembership.Role.MEMBER
 
@@ -66,12 +100,30 @@ class ProjectViewSet(viewsets.ModelViewSet):
             user=target_user,
             defaults={"role": role},
         )
+
+        Notification.objects.create(
+            recipient=target_user,
+            actor=request.user,
+            action=f"added you to project {project.name}",
+            target=project.name,
+        )
+
+        if target_user.email:
+            send_project_invite_email(
+                project_name=project.name,
+                invited_email=target_user.email,
+                invited_user=target_user.username,
+                invited_by=request.user.get_full_name() or request.user.username,
+            )
+
         return Response(ProjectSerializer(project, context={"request": request}).data)
 
     @action(detail=True, methods=["post"])
     def remove_member(self, request, pk=None):
         """POST {user_id} -> removes user from this project."""
         project = self.get_object()
+        if not is_project_admin(request.user, project):
+            raise PermissionDenied("Only project admins can remove members.")
         user_id = request.data.get("user_id")
         if not user_id:
             return Response({"error": "user_id is required."}, status=status.HTTP_400_BAD_REQUEST)
@@ -83,30 +135,37 @@ class ProjectViewSet(viewsets.ModelViewSet):
 class ProjectDocViewSet(viewsets.ModelViewSet):
     """CRUD API for project documentation pages."""
     serializer_class = ProjectDocSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, LimitedMemberReadOnly]
 
     def get_queryset(self):
         project_id = self.request.query_params.get("project")
-        qs = ProjectDoc.objects.all()
+        qs = ProjectDoc.objects.filter(visible_projects_q(self.request.user, "project__")).distinct()
         if project_id:
             qs = qs.filter(project_id=project_id)
         return qs
 
     def perform_create(self, serializer):
+        if not is_project_admin(self.request.user, serializer.validated_data["project"]):
+            raise PermissionDenied("You cannot create documents in this project.")
         serializer.save(created_by=self.request.user)
 
 
 class AutomationRuleViewSet(viewsets.ModelViewSet):
     """CRUD API for project automation rules."""
     serializer_class = AutomationRuleSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, LimitedMemberReadOnly]
 
     def get_queryset(self):
         project_id = self.request.query_params.get("project")
-        qs = AutomationRule.objects.all()
+        qs = AutomationRule.objects.filter(visible_projects_q(self.request.user, "project__")).distinct()
         if project_id:
             qs = qs.filter(project_id=project_id)
         return qs
+
+    def perform_create(self, serializer):
+        if not is_project_admin(self.request.user, serializer.validated_data["project"]):
+            raise PermissionDenied("Only project admins can create automation rules.")
+        serializer.save()
 
 
 class SprintViewSet(viewsets.ModelViewSet):
@@ -120,11 +179,11 @@ class SprintViewSet(viewsets.ModelViewSet):
     DELETE /api/sprints/<id>/          — delete a PLANNED sprint
     """
     serializer_class = SprintSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, LimitedMemberReadOnly]
 
     def get_queryset(self):
         qs = Sprint.objects.filter(
-            project__memberships__user=self.request.user
+            visible_projects_q(self.request.user, "project__")
         ).distinct()
         project_id = self.request.query_params.get("project")
         if project_id:
@@ -133,12 +192,18 @@ class SprintViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         project = serializer.validated_data["project"]
-        if not project.memberships.filter(user=self.request.user).exists():
-            from rest_framework.exceptions import PermissionDenied
-            raise PermissionDenied("You are not a member of this project.")
+        if not is_project_admin(self.request.user, project):
+            raise PermissionDenied("Only project admins can create sprints.")
+        serializer.save()
+
+    def perform_update(self, serializer):
+        if not is_project_admin(self.request.user, serializer.instance.project):
+            raise PermissionDenied("Only project admins can edit sprints.")
         serializer.save()
 
     def perform_destroy(self, instance):
+        if not is_project_admin(self.request.user, instance.project):
+            raise PermissionDenied("Only project admins can delete sprints.")
         if instance.status != Sprint.Status.PLANNED:
             raise ValidationError("Only planned sprints can be deleted.")
         # Move issues back to backlog
@@ -149,6 +214,8 @@ class SprintViewSet(viewsets.ModelViewSet):
     def start(self, request, pk=None):
         """Activate this sprint. Fails if another sprint is already active in the project."""
         sprint = self.get_object()
+        if not is_project_admin(request.user, sprint.project):
+            raise PermissionDenied("Only project admins can start sprints.")
         if sprint.status != Sprint.Status.PLANNED:
             return Response(
                 {"detail": f"Only PLANNED sprints can be started. This sprint is {sprint.status}."},
@@ -176,6 +243,8 @@ class SprintViewSet(viewsets.ModelViewSet):
         unless move_to_sprint_id is provided to re-assign them to another sprint.
         """
         sprint = self.get_object()
+        if not is_project_admin(request.user, sprint.project):
+            raise PermissionDenied("Only project admins can complete sprints.")
         if sprint.status != Sprint.Status.ACTIVE:
             return Response(
                 {"detail": "Only ACTIVE sprints can be completed."},
@@ -219,11 +288,11 @@ class WorkflowStateViewSet(viewsets.ModelViewSet):
     POST /api/workflow-states/seed/?project=<id> — reset to default 3-column workflow
     """
     serializer_class = WorkflowStateSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, LimitedMemberReadOnly]
 
     def get_queryset(self):
         qs = WorkflowState.objects.filter(
-            project__memberships__user=self.request.user
+            visible_projects_q(self.request.user, "project__")
         ).distinct()
         project_id = self.request.query_params.get("project")
         if project_id:
@@ -232,14 +301,20 @@ class WorkflowStateViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         project = serializer.validated_data["project"]
-        if not project.memberships.filter(user=self.request.user).exists():
-            from rest_framework.exceptions import PermissionDenied
-            raise PermissionDenied("You are not a member of this project.")
+        if not is_project_admin(self.request.user, project):
+            raise PermissionDenied("Only project admins can edit the workflow.")
         # Auto-assign next position
         max_pos = WorkflowState.objects.filter(project=project).count()
         serializer.save(position=max_pos)
 
+    def perform_update(self, serializer):
+        if not is_project_admin(self.request.user, serializer.instance.project):
+            raise PermissionDenied("Only project admins can edit the workflow.")
+        serializer.save()
+
     def perform_destroy(self, instance):
+        if not is_project_admin(self.request.user, instance.project):
+            raise PermissionDenied("Only project admins can edit the workflow.")
         # Block deletion if any issues still reference this status name
         from issues.models import Issue
         count = Issue.objects.filter(project=instance.project, status=instance.name).count()
@@ -257,10 +332,12 @@ class WorkflowStateViewSet(viewsets.ModelViewSet):
         if not project_id:
             return Response({"detail": "project is required."}, status=status.HTTP_400_BAD_REQUEST)
         project = Project.objects.filter(
-            id=project_id, memberships__user=request.user
+            visible_projects_q(request.user), id=project_id
         ).first()
         if not project:
             return Response({"detail": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not is_project_admin(request.user, project):
+            raise PermissionDenied("Only project admins can reset the workflow.")
         states = create_default_workflow(project)
         return Response(WorkflowStateSerializer(states, many=True).data)
 
@@ -273,12 +350,12 @@ class WorkflowTransitionViewSet(viewsets.ModelViewSet):
     DELETE /api/workflow-transitions/<id>/
     """
     serializer_class = WorkflowTransitionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, LimitedMemberReadOnly]
     http_method_names = ["get", "post", "delete", "head", "options"]
 
     def get_queryset(self):
         qs = WorkflowTransition.objects.filter(
-            project__memberships__user=self.request.user
+            visible_projects_q(self.request.user, "project__")
         ).distinct()
         project_id = self.request.query_params.get("project")
         if project_id:
@@ -287,10 +364,14 @@ class WorkflowTransitionViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         project = serializer.validated_data["project"]
-        if not project.memberships.filter(user=self.request.user).exists():
-            from rest_framework.exceptions import PermissionDenied
-            raise PermissionDenied("You are not a member of this project.")
+        if not is_project_admin(self.request.user, project):
+            raise PermissionDenied("Only project admins can edit the workflow.")
         serializer.save()
+
+    def perform_destroy(self, instance):
+        if not is_project_admin(self.request.user, instance.project):
+            raise PermissionDenied("Only project admins can edit the workflow.")
+        instance.delete()
 
 
 class SavedFilterViewSet(viewsets.ModelViewSet):
@@ -312,7 +393,108 @@ class SavedFilterViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         project = serializer.validated_data["project"]
-        if not project.memberships.filter(user=self.request.user).exists():
-            from rest_framework.exceptions import PermissionDenied
+        if not has_project_access(self.request.user, project):
             raise PermissionDenied("You are not a member of this project.")
         serializer.save(owner=self.request.user)
+
+
+class CalendarEntryViewSet(viewsets.ModelViewSet):
+    """
+    Things added to a project's calendar by clicking a day (reminder / task / event / meeting).
+    GET  /api/calendar-entries/?project=<id>[&from=YYYY-MM-DD&to=YYYY-MM-DD]
+    POST /api/calendar-entries/  {project, kind, title, description, date, time?, participant_ids?}
+
+    Open to every account type that can see the project, except read-only Viewers.
+    Creating or editing tells the people involved right away; the date arriving tells everyone again
+    (see projects/reminders.py).
+    """
+    serializer_class = CalendarEntrySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        qs = (
+            CalendarEntry.objects.filter(visible_projects_q(self.request.user, "project__"))
+            .distinct()
+            .select_related("project", "created_by")
+            .prefetch_related("participants")
+        )
+        params = self.request.query_params
+        if params.get("project"):
+            qs = qs.filter(project_id=params["project"])
+        if params.get("from"):
+            qs = qs.filter(date__gte=params["from"])
+        if params.get("to"):
+            qs = qs.filter(date__lte=params["to"])
+        return qs
+
+    # -- helpers ---------------------------------------------------------
+    def _require_writer(self, project):
+        if effective_project_role(self.request.user, project) in (None, "VIEWER"):
+            raise PermissionDenied("You can view this calendar but not add to it.")
+
+    def _require_owner_or_admin(self, entry):
+        if entry.created_by_id != self.request.user.id and not is_project_admin(self.request.user, entry.project):
+            raise PermissionDenied("Only the person who added this (or a project admin) can change it.")
+
+    @staticmethod
+    def _check_date(value):
+        if value < local_today():
+            raise ValidationError({"date": ["Pick today or a future date."]})
+
+    def _people(self, entry, explicit_ids):
+        """Assignees picked in the form + anyone @mentioned in the title / notes (never the creator)."""
+        User = get_user_model()
+        people = {}
+        for user in User.objects.filter(pk__in=explicit_ids, is_active=True):
+            if not has_project_access(user, entry.project):
+                raise ValidationError({"participant_ids": [f"{user.username} is not a member of this project."]})
+            people[user.pk] = user
+        for user in mentioned_users(f"{entry.title}\n{entry.description}", entry.project):
+            people[user.pk] = user
+        people.pop(entry.created_by_id, None)
+        return list(people.values())
+
+    # -- writes ----------------------------------------------------------
+    def perform_create(self, serializer):
+        project = serializer.validated_data["project"]
+        self._require_writer(project)
+        self._check_date(serializer.validated_data["date"])
+        ids = serializer.validated_data.pop("participant_ids", [])
+        entry = serializer.save(created_by=self.request.user)
+        people = self._people(entry, ids)
+        entry.participants.set(people)
+        notify_added(entry, self.request.user, people)  # "the day of assigned"
+
+    def perform_update(self, serializer):
+        entry = serializer.instance
+        self._require_owner_or_admin(entry)
+        data = serializer.validated_data
+        if "date" in data and data["date"] != entry.date:
+            self._check_date(data["date"])
+        before = set(entry.participants.values_list("pk", flat=True))
+        ids = data.pop("participant_ids", None)
+        explicit = list(before) if ids is None else ids
+        rescheduled = ("date" in data and data["date"] != entry.date) or ("time" in data and data["time"] != entry.time)
+        entry = serializer.save(**({"due_notified_at": None} if rescheduled else {}))
+        people = self._people(entry, explicit)
+        entry.participants.set(people)
+        notify_added(entry, self.request.user, [u for u in people if u.pk not in before])
+
+    def perform_destroy(self, instance):
+        self._require_owner_or_admin(instance)
+        instance.delete()
+
+
+@api_view(["GET", "POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def cron_reminders(request):
+    """
+    Hit this on a schedule (every minute or so) where there is no long-running server, e.g. Vercel Cron.
+    Send the secret as `Authorization: Bearer <CRON_SECRET>` or `?secret=<CRON_SECRET>`.
+    """
+    secret = getattr(settings, "CRON_SECRET", "")
+    supplied = request.query_params.get("secret") or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not secret or not hmac.compare_digest(supplied.encode(), secret.encode()):
+        return Response({"detail": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+    return Response({"sent": process_due()})

@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from users.serializers import UserSerializer
 
-from .models import AutomationRule, Project, ProjectDoc, ProjectMembership, Sprint, WorkflowState, WorkflowTransition, SavedFilter
+from .models import AutomationRule, CalendarEntry, Project, ProjectDoc, ProjectMembership, Sprint, WorkflowState, WorkflowTransition, SavedFilter
 
 
 class ProjectMembershipSerializer(serializers.ModelSerializer):
@@ -91,8 +91,8 @@ class ProjectSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
             return None
-        membership = obj.memberships.filter(user=request.user).first()
-        return membership.role if membership else None
+        from users.access import effective_project_role
+        return effective_project_role(request.user, obj)
 
 
 class SavedFilterSerializer(serializers.ModelSerializer):
@@ -107,3 +107,21 @@ class SavedFilterSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["created_at"]
+
+
+class CalendarEntrySerializer(serializers.ModelSerializer):
+    created_by = UserSerializer(read_only=True)
+    participants = UserSerializer(many=True, read_only=True)
+    # People picked as assignees. Anyone @mentioned in the title/notes is added automatically.
+    participant_ids = serializers.ListField(
+        child=serializers.IntegerField(), write_only=True, required=False
+    )
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+
+    class Meta:
+        model = CalendarEntry
+        fields = [
+            "id", "project", "kind", "kind_label", "title", "description", "date", "time",
+            "created_by", "participants", "participant_ids", "created_at", "updated_at",
+        ]
+        read_only_fields = ["created_by"]

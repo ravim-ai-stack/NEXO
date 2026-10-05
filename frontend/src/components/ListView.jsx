@@ -1,16 +1,78 @@
 import { useState, useRef, useEffect } from "react";
+import MentionInput from "./MentionInput";
+import { can as canPermission, ACTIONS } from "../permissions";
+import { userLabel } from "../utils/userLabel";
 import api from "../api/client";
 import IssueModal from "./IssueModal";
 import { IssueTypeIcon, PriorityIcon, MergeIcon, TrashIcon } from "./Icons";
 
-export default function ListView({ project, issues = [], members = [], onRefresh, currentUser, isViewer = false }) {
+export default function ListView({ project, issues = [], members = [], onRefresh, currentUser, role: roleProp, isViewer = false }) {
+  const role = roleProp || (isViewer ? "VIEWER" : "MANAGER");
+  const canCreate = canPermission(role, ACTIONS.CREATE_ISSUE);
+  const canEditIssues = canPermission(role, ACTIONS.EDIT_ISSUE); // title, priority, due date, merge, delete...
+  const canChangeStatus = canPermission(role, ACTIONS.CHANGE_ISSUE_STATUS);
+  const canChangeResolution = canPermission(role, ACTIONS.CHANGE_RESOLUTION);
+  const canDelete = canPermission(role, ACTIONS.DELETE_ISSUE); // Admins only
   const [selectedIssueId, setSelectedIssueId] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [activeDropdownId, setActiveDropdownId] = useState(null);
   const [activeResolutionDropdownId, setActiveResolutionDropdownId] = useState(null);
+  // Where the open status/resolution menu sits. It is `position: fixed`, so the table's
+  // scroll/overflow containers can't clip it and it floats above everything else.
+  const [popPos, setPopPos] = useState(null);
+
+  function openPopover(ev, kind, id) {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const menuHeight = 190; // roughly the tallest menu (resolution has 4 options)
+    const openUp = window.innerHeight - rect.bottom < menuHeight && rect.top > menuHeight;
+    setPopPos({
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - 168)),
+      ...(openUp ? { bottom: window.innerHeight - rect.top + 4 } : { top: rect.bottom + 4 }),
+    });
+    if (kind === "status") {
+      setActiveResolutionDropdownId(null);
+      setActiveDropdownId(activeDropdownId === id ? null : id);
+    } else {
+      setActiveDropdownId(null);
+      setActiveResolutionDropdownId(activeResolutionDropdownId === id ? null : id);
+    }
+  }
+
+  // Close an open menu on outside click, scroll or resize (its anchor would have moved)
+  useEffect(() => {
+    if (activeDropdownId == null && activeResolutionDropdownId == null) return;
+    const close = () => {
+      setActiveDropdownId(null);
+      setActiveResolutionDropdownId(null);
+    };
+    const onDown = (e) => {
+      if (!e.target.closest?.(".jira-status-dropdown-wrapper")) close();
+    };
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [activeDropdownId, activeResolutionDropdownId]);
   const [inlineCreating, setInlineCreating] = useState(false);
-  const [inlineTitle, setInlineTitle] = useState("");
-  const [inlineType, setInlineType] = useState("TASK");
+  // One-row create: every field is entered in the row itself ("Created" is filled in automatically)
+  const emptyDraft = () => ({
+    type: "TASK",
+    title: "",
+    assignee: "",
+    reporter: currentUser?.id ? String(currentUser.id) : "",
+    priority: "MEDIUM",
+    status: "TODO",
+    due: "",
+    resolution: "Unresolved",
+  });
+  const [inlineDraft, setInlineDraft] = useState(emptyDraft);
+  const [inlineSaving, setInlineSaving] = useState(false);
+  const patchDraft = (patch) => setInlineDraft((d) => ({ ...d, ...patch }));
+  const activeMembers = members.filter((m) => m.user && !m.user.is_deactivated);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [copiedKey, setCopiedKey] = useState(null);
 
@@ -273,22 +335,37 @@ export default function ListView({ project, issues = [], members = [], onRefresh
     }
   }
 
-  async function handleInlineCreate(e) {
-    e.preventDefault();
-    if (!inlineTitle.trim()) return;
+  function cancelInlineCreate() {
+    setInlineCreating(false);
+    setInlineDraft(emptyDraft());
+  }
+
+  async function handleInlineCreate() {
+    const d = inlineDraft;
+    if (!d.title.trim()) {
+      alert("Enter what needs to be done.");
+      return;
+    }
+    setInlineSaving(true);
     try {
       await api.post("/issues/", {
         project: project.id,
-        title: inlineTitle.trim(),
-        issue_type: inlineType,
-        priority: "MEDIUM",
-        status: "TODO",
+        title: d.title.trim(),
+        issue_type: d.type,
+        priority: d.priority,
+        status: d.status,
+        resolution: d.resolution,
+        assignee_id: d.assignee ? Number(d.assignee) : null,
+        reporter_id: d.reporter ? Number(d.reporter) : null,
+        due_date: d.due || null,
       });
-      setInlineTitle("");
-      setInlineCreating(false);
+      cancelInlineCreate();
       onRefresh && onRefresh();
     } catch (err) {
-      alert("Failed to create issue.");
+      const data = err?.response?.data;
+      alert(data?.detail || Object.values(data || {}).flat()[0] || "Failed to create issue.");
+    } finally {
+      setInlineSaving(false);
     }
   }
 
@@ -626,13 +703,15 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                   </div>
                 </button>
 
-                <button className="jira-popover-item-btn" onClick={handleQuickSetDueDates}>
+                {canEditIssues && (
+<button className="jira-popover-item-btn" onClick={handleQuickSetDueDates}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
                   <div>
                     <div className="jira-popover-item-title">Set Sprint Due Dates</div>
                     <div className="jira-popover-item-sub">+7 days for open tasks</div>
                   </div>
                 </button>
+)}
 
                 <button
                   className="jira-popover-item-btn"
@@ -815,7 +894,7 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                                 <div className="jira-avatar-circle small">
                                   {issue.assignee.username.substring(0, 2).toUpperCase()}
                                 </div>
-                                <span className="jira-user-name">{issue.assignee.username}</span>
+                                <span className="jira-user-name">{userLabel(issue.assignee)}</span>
                               </div>
                             ) : (
                               <div className="jira-unassigned-cell">
@@ -837,7 +916,7 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                             <div className="jira-reporter-cell">
                               <div className="jira-reporter-avatar-badge">{repInitials}</div>
                               <span className="jira-reporter-name">
-                                {issue.reporter?.username || "Project Member"}
+                                {userLabel(issue.reporter) || "Project Member"}
                               </span>
                             </div>
                           </td>
@@ -868,9 +947,8 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                                     ? "jira-status-inprogress"
                                     : "jira-status-todo"
                                 }`}
-                                onClick={() =>
-                                  setActiveDropdownId(activeDropdownId === issue.id ? null : issue.id)
-                                }
+                                disabled={!canChangeStatus}
+                                onClick={(ev) => openPopover(ev, "status", issue.id)}
                               >
                                 <span>
                                   {issue.status === "IN_PROGRESS"
@@ -885,7 +963,7 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                               </button>
 
                               {activeDropdownId === issue.id && (
-                                <div className="jira-status-popover">
+                                <div className="jira-status-popover" style={popPos ? { position: "fixed", zIndex: 5000, ...popPos } : undefined}>
                                   <button
                                     className={`jira-status-option ${issue.status === "TODO" ? "active" : ""}`}
                                     onClick={(e) => handleStatusChange(issue.id, "TODO", e)}
@@ -927,9 +1005,9 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                               />
                             ) : (
                               <span
-                                className="jira-due-date-text clickable"
-                                onClick={() => setEditingDueDateId(issue.id)}
-                                title="Click to edit due date"
+                                className={`jira-due-date-text ${canEditIssues ? "clickable" : ""}`}
+                                onClick={() => canEditIssues && setEditingDueDateId(issue.id)}
+                                title={canEditIssues ? "Click to edit due date" : undefined}
                               >
                                 {issue.due_date ? new Date(issue.due_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : "— Set date"}
                               </span>
@@ -965,11 +1043,7 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                                     ? "jira-res-resolved"
                                     : "jira-res-unresolved"
                                 }`}
-                                onClick={() =>
-                                  setActiveResolutionDropdownId(
-                                    activeResolutionDropdownId === issue.id ? null : issue.id
-                                  )
-                                }
+                                onClick={(ev) => canChangeResolution && openPopover(ev, "resolution", issue.id)}
                               >
                                 <span>{issue.resolution || (isDone ? "Resolved" : "Unresolved")}</span>
                                 <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
@@ -978,7 +1052,7 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                               </button>
 
                               {activeResolutionDropdownId === issue.id && (
-                                <div className="jira-status-popover">
+                                <div className="jira-status-popover" style={popPos ? { position: "fixed", zIndex: 5000, ...popPos } : undefined}>
                                   <button
                                     className={`jira-status-option ${issue.resolution === "Resolved" ? "active" : ""}`}
                                     onClick={(e) => handleResolutionChange(issue.id, "Resolved", e)}
@@ -1020,40 +1094,173 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                 </div>
               ))}
 
-              {/* Inline Create Row inside table */}
+              {/* Inline Create Row — all fields in one row; Enter creates, Esc cancels */}
               {inlineCreating && (
-                <tr className="jira-row-inline-create">
+                <tr
+                  className="jira-row-inline-create jira-row-create-full"
+                  onKeyDown={(ev) => {
+                    if (ev.key === "Enter" && ev.target.tagName === "INPUT") {
+                      ev.preventDefault();
+                      handleInlineCreate();
+                    } else if (ev.key === "Escape") {
+                      cancelInlineCreate();
+                    }
+                  }}
+                >
                   <td style={{ textAlign: "center" }}>
-                    <IssueTypeIcon type="SUBTASK" size={13} />
+                    <IssueTypeIcon type={inlineDraft.type} size={13} />
                   </td>
-                  <td colSpan={9}>
-                    <form onSubmit={handleInlineCreate} className="jira-inline-create-form">
+
+                  {columns.work && (
+                    <td className="td-work">
+                      <div className="jira-create-work">
+                        <select
+                          className="jira-select-inline"
+                          value={inlineDraft.type}
+                          onChange={(ev) => patchDraft({ type: ev.target.value })}
+                          title="Issue type"
+                        >
+                          <option value="TASK">Task</option>
+                          <option value="BUG">Bug</option>
+                          <option value="STORY">Story</option>
+                        </select>
+                        <MentionInput
+                          value={inlineDraft.title}
+                          onChange={(title) => patchDraft({ title })}
+                          members={activeMembers}
+                          placeholder="What needs to be done? Use @name to mention"
+                          autoFocus
+                        />
+                      </div>
+                    </td>
+                  )}
+
+                  {columns.assignee && (
+                    <td>
                       <select
-                        className="jira-select-inline"
-                        value={inlineType}
-                        onChange={(e) => setInlineType(e.target.value)}
+                        className="jira-select-inline jira-create-cell"
+                        value={inlineDraft.assignee}
+                        onChange={(ev) => patchDraft({ assignee: ev.target.value })}
                       >
-                        <option value="TASK">Task</option>
-                        <option value="BUG">Bug</option>
-                        <option value="STORY">Story</option>
+                        <option value="">Unassigned</option>
+                        {activeMembers.map((m) => (
+                          <option key={m.user.id} value={m.user.id}>{m.user.username}</option>
+                        ))}
                       </select>
-                      <input
-                        type="text"
-                        placeholder="What needs to be done?"
-                        className="jira-inline-input"
-                        value={inlineTitle}
-                        onChange={(e) => setInlineTitle(e.target.value)}
-                        autoFocus
-                      />
-                      <button type="submit" className="jira-btn-primary-sm">Create</button>
-                      <button
-                        type="button"
-                        className="jira-btn-secondary-sm"
-                        onClick={() => setInlineCreating(false)}
+                    </td>
+                  )}
+
+                  {columns.reporter && (
+                    <td>
+                      <select
+                        className="jira-select-inline jira-create-cell"
+                        value={inlineDraft.reporter}
+                        onChange={(ev) => patchDraft({ reporter: ev.target.value })}
                       >
-                        Cancel
-                      </button>
-                    </form>
+                        {activeMembers.map((m) => (
+                          <option key={m.user.id} value={m.user.id}>{m.user.username}</option>
+                        ))}
+                      </select>
+                    </td>
+                  )}
+
+                  {columns.priority && (
+                    <td>
+                      <select
+                        className="jira-select-inline jira-create-cell"
+                        value={inlineDraft.priority}
+                        onChange={(ev) => patchDraft({ priority: ev.target.value })}
+                      >
+                        <option value="LOW">Low</option>
+                        <option value="MEDIUM">Medium</option>
+                        <option value="HIGH">High</option>
+                        <option value="CRITICAL">Critical</option>
+                      </select>
+                    </td>
+                  )}
+
+                  {columns.status && (
+                    <td>
+                      <select
+                        className="jira-select-inline jira-create-cell"
+                        value={inlineDraft.status}
+                        onChange={(ev) => {
+                          const status = ev.target.value;
+                          // same pairing as the status dropdown on existing rows
+                          const resolution =
+                            status === "DONE" ? "Resolved" : status === "TODO" ? "Unresolved" : inlineDraft.resolution;
+                          patchDraft({ status, resolution });
+                        }}
+                      >
+                        <option value="TODO">To Do</option>
+                        <option value="IN_PROGRESS">In Progress</option>
+                        <option value="DONE">Done</option>
+                      </select>
+                    </td>
+                  )}
+
+                  {columns.dueDate && (
+                    <td>
+                      <input
+                        type="date"
+                        className="jira-select-inline jira-create-cell"
+                        value={inlineDraft.due}
+                        onChange={(ev) => patchDraft({ due: ev.target.value })}
+                      />
+                    </td>
+                  )}
+
+                  {columns.createdAt && (
+                    <td>
+                      <span className="jira-meta-date-text" title="Filled in automatically when you create it">
+                        {new Date().toLocaleDateString(undefined, { month: "short", day: "numeric" })} · auto
+                      </span>
+                    </td>
+                  )}
+
+                  {columns.updatedAt && (
+                    <td>
+                      <span className="jira-meta-date-text">—</span>
+                    </td>
+                  )}
+
+                  {columns.resolution && (
+                    <td>
+                      <select
+                        className="jira-select-inline jira-create-cell"
+                        value={inlineDraft.resolution}
+                        onChange={(ev) => {
+                          const resolution = ev.target.value;
+                          const status =
+                            resolution === "Resolved" || resolution === "Solved"
+                              ? "DONE"
+                              : resolution === "Unresolved"
+                              ? "TODO"
+                              : inlineDraft.status;
+                          patchDraft({ resolution, status });
+                        }}
+                      >
+                        <option value="Unresolved">Unresolved</option>
+                        <option value="Resolved">Resolved</option>
+                        <option value="Solved">Solved</option>
+                        <option value="Won't Fix">Won't Fix</option>
+                      </select>
+                    </td>
+                  )}
+
+                  <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+                    <button
+                      type="button"
+                      className="jira-btn-primary-sm"
+                      onClick={handleInlineCreate}
+                      disabled={inlineSaving}
+                      title="Create (Enter)"
+                    >
+                      {inlineSaving ? "…" : "Create"}
+                    </button>{" "}
+                    <button type="button" className="jira-btn-secondary-sm" onClick={cancelInlineCreate} title="Cancel (Esc)">
+                      ✕
+                    </button>
                   </td>
                 </tr>
               )}
@@ -1063,7 +1270,7 @@ export default function ListView({ project, issues = [], members = [], onRefresh
 
         {/* Footer Create bar matching screenshot */}
         <div className="jira-table-footer-bar">
-          {!isViewer && !inlineCreating ? (
+          {canCreate && !inlineCreating ? (
             <button
               className="jira-btn-inline-add-trigger"
               onClick={() => setInlineCreating(true)}
@@ -1105,6 +1312,7 @@ export default function ListView({ project, issues = [], members = [], onRefresh
           </div>
 
           <div className="jira-bulk-actions-group">
+{canEditIssues && (
             <button
               className="jira-btn-bulk-action"
               onClick={handleBulkMoveToTop}
@@ -1113,7 +1321,9 @@ export default function ListView({ project, issues = [], members = [], onRefresh
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="18 15 12 9 6 15"/></svg>
               <span>Move to top</span>
             </button>
+)}
 
+{canEditIssues && (
             <button
               className="jira-btn-bulk-action"
               onClick={handleBulkMerge}
@@ -1122,7 +1332,9 @@ export default function ListView({ project, issues = [], members = [], onRefresh
               <MergeIcon size={13} />
               <span>Merge</span>
             </button>
+)}
 
+{canChangeStatus && (
             <button
               className="jira-btn-bulk-action"
               onClick={handleBulkArchive}
@@ -1131,7 +1343,9 @@ export default function ListView({ project, issues = [], members = [], onRefresh
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
               <span>Archive</span>
             </button>
+)}
 
+{canChangeStatus && (
             <div className="jira-bulk-select-wrap">
               <select
                 className="jira-select-sm"
@@ -1147,7 +1361,9 @@ export default function ListView({ project, issues = [], members = [], onRefresh
                 <option value="DONE">Done</option>
               </select>
             </div>
+)}
 
+{canDelete && (
             <button
               className="jira-btn-bulk-action danger"
               onClick={handleBulkDelete}
@@ -1156,6 +1372,7 @@ export default function ListView({ project, issues = [], members = [], onRefresh
               <TrashIcon size={13} color="currentColor" />
               <span>Delete ({selectedIds.size})</span>
             </button>
+)}
           </div>
         </div>
       )}
@@ -1168,6 +1385,7 @@ export default function ListView({ project, issues = [], members = [], onRefresh
           members={project?.members || members || []}
           currentUser={currentUser}
           isViewer={isViewer}
+          role={role}
           onClose={() => setSelectedIssueId(null)}
           onUpdate={onRefresh}
         />

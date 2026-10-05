@@ -1,3 +1,4 @@
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
 from users.serializers import UserSerializer
@@ -55,6 +56,10 @@ class IssueSerializer(serializers.ModelSerializer):
     reporter = UserSerializer(read_only=True)
     assignee = UserSerializer(read_only=True)
     assignee_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
+    # Optional on create: who reported it (defaults to the person creating the issue).
+    reporter_id = serializers.PrimaryKeyRelatedField(
+        source="reporter", queryset=get_user_model().objects.all(), write_only=True, required=False, allow_null=True
+    )
     sprint_id = serializers.IntegerField(write_only=True, required=False, allow_null=True)
     sprint_name = serializers.ReadOnlyField(source="sprint.name")
     labels = LabelSerializer(many=True, read_only=True)
@@ -71,7 +76,7 @@ class IssueSerializer(serializers.ModelSerializer):
         model = Issue
         fields = [
             "id", "project", "parent", "parent_title", "title", "description", "issue_type",
-            "status", "priority", "reporter", "assignee", "assignee_id",
+            "status", "priority", "reporter", "reporter_id", "assignee", "assignee_id",
             "labels", "label_ids", "comments", "activity_log", "resolution", "subtasks",
             "figma_url", "github_pr", "due_date", "attachments",
             "sprint_id", "sprint_name",
@@ -89,13 +94,15 @@ class IssueListSerializer(serializers.ModelSerializer):
     assignee = UserSerializer(read_only=True)
     labels = LabelSerializer(many=True, read_only=True)
     parent_title = serializers.ReadOnlyField(source="parent.title")
+    project_key = serializers.ReadOnlyField(source="project.key")
+    project_name = serializers.ReadOnlyField(source="project.name")
     subtasks_count = serializers.SerializerMethodField()
     sprint_name = serializers.ReadOnlyField(source="sprint.name")
 
     class Meta:
         model = Issue
         fields = [
-            "id", "project", "parent", "parent_title", "title", "description",
+            "id", "project", "project_key", "project_name", "parent", "parent_title", "title", "description",
             "issue_type", "status", "priority", "reporter", "assignee", "labels",
             "resolution", "subtasks_count", "figma_url", "github_pr", "due_date",
             "sprint_id", "sprint_name",

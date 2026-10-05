@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { userLabel } from "../utils/userLabel";
 import api from "../api/client";
 
 const TEMPLATES = [
@@ -235,7 +236,7 @@ export default function DocsView({ project, currentUser }) {
               <div className="jira-doc-tree-info">
                 <div className="jira-doc-tree-title">{doc.title}</div>
                 <div className="jira-doc-tree-meta">
-                  <span>{doc.created_by?.username || currentUserName}</span> • <span>{new Date(doc.updated_at || Date.now()).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
+                  <span>{userLabel(doc.created_by) || currentUserName}</span> • <span>{new Date(doc.updated_at || Date.now()).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</span>
                 </div>
               </div>
             </div>
@@ -262,7 +263,7 @@ export default function DocsView({ project, currentUser }) {
                   <div className="jira-avatar-circle" style={{ width: 22, height: 22, fontSize: 10 }}>
                     {(selectedDoc.created_by?.username || currentUserName).substring(0, 2).toUpperCase()}
                   </div>
-                  <span>Created by <strong>{selectedDoc.created_by?.username || currentUserName}</strong></span>
+                  <span>Created by <strong>{userLabel(selectedDoc.created_by) || currentUserName}</strong></span>
                   <span>•</span>
                   <span>Last updated: {new Date(selectedDoc.updated_at || Date.now()).toLocaleString()}</span>
                   <span className="jira-status-pill jira-status-done" style={{ fontSize: 10 }}>SAVED</span>

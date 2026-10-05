@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { userLabel } from "../utils/userLabel";
 import api from "../api/client";
 
 export default function ProjectMembersModal({
@@ -31,7 +32,7 @@ export default function ProjectMembersModal({
   if (!isOpen || !project) return null;
 
   const currentMemberUserIds = new Set(members.map((m) => m.user?.id));
-  const availableUsersToAdd = allUsers.filter((u) => !currentMemberUserIds.has(u.id));
+  const availableUsersToAdd = allUsers.filter((u) => !currentMemberUserIds.has(u.id) && !u.is_deactivated);
 
   async function handleAddMember(e) {
     e.preventDefault();
@@ -135,7 +136,7 @@ export default function ProjectMembersModal({
                         <option value="">Select registered user...</option>
                         {availableUsersToAdd.map((u) => (
                           <option key={u.id} value={u.id}>
-                            {u.username} ({u.email || "no email"})
+                            {userLabel(u)} ({u.email || "no email"})
                           </option>
                         ))}
                       </select>
@@ -185,7 +186,7 @@ export default function ProjectMembersModal({
 
             <div className="jira-members-list">
               {filteredMembers.map((m) => {
-                const username = m.user?.username || "Unknown";
+                const username = userLabel(m.user) || "Unknown";
                 const initials = username.substring(0, 2).toUpperCase();
                 return (
                   <div key={m.id} className="jira-member-item-row">

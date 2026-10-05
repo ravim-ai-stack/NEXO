@@ -2,7 +2,100 @@ import random
 import re
 import socket
 from django.conf import settings
+from django.core import signing
 from django.core.mail import send_mail
+import threading
+
+def send_mail_background(subject, message, from_email, recipient_list, html_message=None):
+    """
+    Send an email without making the request wait for the mail server (Gmail SMTP can take seconds).
+    Falls back to sending inline when EMAIL_SEND_ASYNC is off (tests, serverless hosting).
+    """
+    if not getattr(settings, "EMAIL_SEND_ASYNC", False):
+        return send_mail(subject, message, from_email, recipient_list, html_message=html_message)
+
+    def _deliver():
+        try:
+            send_mail(subject, message, from_email, recipient_list, html_message=html_message)
+        except Exception as e:  # noqa: BLE001 — nobody is waiting on this; just log it
+            print(f"[Background email error]: {e}")
+
+    threading.Thread(target=_deliver, name="nexo-email", daemon=True).start()
+    return 1
+
+
+INVITE_SALT = "nexo-user-invite"
+INVITE_MAX_AGE = 7 * 24 * 3600  # invitation links stay valid for 7 days
+
+
+def make_invite_token(user) -> str:
+    """Signed, single-use token: it embeds last_login, which changes once the invite is accepted."""
+    return signing.dumps(
+        {"u": user.pk, "l": user.last_login.isoformat() if user.last_login else ""},
+        salt=INVITE_SALT,
+    )
+
+
+def read_invite_token(token: str):
+    """Returns the user the token was issued for, or None if bad / expired / already used."""
+    from django.contrib.auth import get_user_model
+    try:
+        data = signing.loads(token, salt=INVITE_SALT, max_age=INVITE_MAX_AGE)
+    except signing.BadSignature:
+        return None
+    user = get_user_model().objects.filter(pk=data.get("u")).first()
+    if not user or (user.last_login.isoformat() if user.last_login else "") != data.get("l"):
+        return None
+    return user
+
+
+def can_manage_users(user) -> bool:
+    """May this person add users? (Admins any, Managers for their own team.)"""
+    from .access import can_create_users
+    return can_create_users(user)
+
+
+def send_user_invitation_email(user, invited_by: str = "") -> bool:
+    """Invites a newly added team member; the link signs them straight in (no verification code)."""
+    frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173")
+    link = f"{frontend_url}/invite/{make_invite_token(user)}"
+    name = user.get_full_name() or user.username
+    by = invited_by or "A NEXO admin"
+    role_line = f" as {user.designation}" if user.designation else ""
+    subject = "NEXO - You have been invited to join the workspace"
+    message = f"""Hello {name},
+
+{by} has invited you to join NEXO{role_line}.
+
+Open this link to get started (no verification needed, valid for 7 days):
+{link}
+
+Best regards,
+The NEXO Team
+"""
+    html_message = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; border: 1px solid #DFE1E6; border-radius: 8px; background: #FFFFFF;">
+        <h2 style="color: #0052CC; margin: 0 0 16px 0;">NEXO</h2>
+        <h3 style="color: #172B4D; margin-top: 0;">You're invited to join NEXO</h3>
+        <p style="color: #42526E; font-size: 14px; line-height: 1.5;">Hello <strong>{name}</strong>,</p>
+        <p style="color: #42526E; font-size: 14px; line-height: 1.5;">
+            <strong>{by}</strong> has invited you to join the NEXO workspace{role_line}.
+        </p>
+        <a href="{link}" style="display: inline-block; margin: 12px 0 20px; padding: 11px 24px; background: #0052CC; color: #FFFFFF; font-weight: 700; font-size: 14px; border-radius: 7px; text-decoration: none;">
+            Accept invitation &rarr;
+        </a>
+        <p style="color: #6B778C; font-size: 12px; margin: 0;">
+            No verification code is needed. This link signs you in directly and expires in 7 days.
+        </p>
+    </div>
+    """
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@NEXO.local")
+    try:
+        send_mail_background(subject, message, from_email, [user.email], html_message=html_message)
+        return True
+    except Exception as e:
+        print(f"[User Invitation Email Error]: {e}")
+        return False
 
 # Blocklist of popular disposable / temporary email domains
 DISPOSABLE_DOMAINS = {
@@ -83,6 +176,57 @@ def generate_otp_code(length: int = 6) -> str:
     return "".join([str(random.randint(0, 9)) for _ in range(length)])
 
 
+def send_project_invite_email(project_name: str, invited_email: str, invited_user: str = "", invited_by: str = "") -> bool:
+    """Sends a project-invitation email to a newly added team member."""
+    subject = f"NEXO - You have been added to {project_name}"
+    recipient_name = invited_user or invited_email.split("@")[0]
+    message = f"""Hello {recipient_name},
+
+You have been added to the project '{project_name}' in NEXO.
+
+Invited by: {invited_by or 'A project admin'}
+
+You can now log in to the app and access the project.
+
+Best regards,
+The NEXO Team
+"""
+
+    html_message = f"""
+    <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; border: 1px solid #DFE1E6; border-radius: 8px; background: #FFFFFF;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 20px;">
+            <h2 style="color: #0052CC; margin: 0;">NEXO</h2>
+        </div>
+        <h3 style="color: #172B4D; margin-top: 0;">Project Invitation</h3>
+        <p style="color: #42526E; font-size: 14px; line-height: 1.5;">
+            Hello <strong>{recipient_name}</strong>,
+        </p>
+        <p style="color: #42526E; font-size: 14px; line-height: 1.5;">
+            You have been added to the project <strong>{project_name}</strong> in NEXO.
+        </p>
+        <p style="color: #42526E; font-size: 14px; line-height: 1.5;">
+            Invited by: <strong>{invited_by or 'A project admin'}</strong>
+        </p>
+        <div style="background: #F4F5F7; border: 2px solid #0052CC; border-radius: 8px; padding: 18px; margin: 24px 0;">
+            <p style="margin: 0; color: #172B4D; font-weight: 600;">
+                You can now log in and access this project.
+            </p>
+        </div>
+        <p style="color: #6B778C; font-size: 12px; margin: 0;">
+            Best regards,<br />The NEXO Team
+        </p>
+    </div>
+    """
+
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@jira-software.local")
+    try:
+        send_mail_background(subject, message, from_email, [invited_email], html_message=html_message)
+        return True
+    except Exception as e:
+        print(f"[Project Invite Email Error]: {e}")
+        return False
+
+
 def send_verification_email(email: str, code: str, purpose: str = "REGISTRATION", username: str = "") -> bool:
     """
     Dispatches a formatted verification email with the 6-digit OTP code.
@@ -136,35 +280,7 @@ The NEXO Team
     from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@jira-software.local")
 
     try:
-        import ssl
-        import smtplib
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-
-        # Build the email message
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = from_email
-        msg["To"] = email
-        msg.attach(MIMEText(message, "plain"))
-        msg.attach(MIMEText(html_message, "html"))
-
-        # Connect with TLS but skip cert verification (fixes Windows SSL chain issue)
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-
-        host = getattr(settings, "EMAIL_HOST", "smtp.gmail.com")
-        port = getattr(settings, "EMAIL_PORT", 587)
-        user = getattr(settings, "EMAIL_HOST_USER", "")
-        password = getattr(settings, "EMAIL_HOST_PASSWORD", "")
-
-        with smtplib.SMTP(host, port, timeout=10) as server:
-            server.ehlo()
-            server.starttls(context=context)
-            server.login(user, password)
-            server.sendmail(from_email, [email], msg.as_string())
-
+        send_mail(subject, message, from_email, [email], html_message=html_message)
         return True
     except Exception as e:
         print(f"[Email Dispatch Error]: {e}")
@@ -246,6 +362,7 @@ def send_notification_email(
     issue_status: str = None,
     issue_reporter: str = None,
     issue_assignee: str = None,
+    body_label: str = None,
 ) -> bool:
     """
     Unified NEXO notification email matching real Jira's structure:
@@ -257,6 +374,12 @@ def send_notification_email(
     Button  : View Issue →
     Footer  : Why you're receiving this
     """
+    from html import escape as _esc
+    _actor_h = _esc(str(actor))
+    _title_h = _esc(str(issue_title))
+    _project_h = _esc(str(project_name))
+    _vals = {k: _esc(str(v)) for k, v in dict(
+        t=issue_type, p=issue_priority, s=issue_status, r=issue_reporter, a=issue_assignee).items() if v}
     frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:5173")
     issue_url = (
         f"{frontend_url}/projects/{project_id}/board?issue={issue_id}"
@@ -283,24 +406,26 @@ def send_notification_email(
     # Issue card rows
     issue_rows = ""
     if issue_type:
-        issue_rows += f"<tr><td style='color:#6B778C;padding:3px 0;font-size:13px;width:110px'>Type</td><td style='font-size:13px;color:#172B4D'>{issue_type}</td></tr>"
+        issue_rows += f"<tr><td style='color:#6B778C;padding:3px 0;font-size:13px;width:110px'>Type</td><td style='font-size:13px;color:#172B4D'>{_vals['t']}</td></tr>"
     if issue_priority:
-        issue_rows += f"<tr><td style='color:#6B778C;padding:3px 0;font-size:13px'>Priority</td><td style='font-size:13px;color:#172B4D'>{issue_priority}</td></tr>"
+        issue_rows += f"<tr><td style='color:#6B778C;padding:3px 0;font-size:13px'>Priority</td><td style='font-size:13px;color:#172B4D'>{_vals['p']}</td></tr>"
     if issue_status:
-        issue_rows += f"<tr><td style='color:#6B778C;padding:3px 0;font-size:13px'>Status</td><td style='font-size:13px;color:#172B4D'>{issue_status}</td></tr>"
+        issue_rows += f"<tr><td style='color:#6B778C;padding:3px 0;font-size:13px'>Status</td><td style='font-size:13px;color:#172B4D'>{_vals['s']}</td></tr>"
     if issue_reporter:
-        issue_rows += f"<tr><td style='color:#6B778C;padding:3px 0;font-size:13px'>Reporter</td><td style='font-size:13px;color:#172B4D'>{issue_reporter}</td></tr>"
+        issue_rows += f"<tr><td style='color:#6B778C;padding:3px 0;font-size:13px'>Reporter</td><td style='font-size:13px;color:#172B4D'>{_vals['r']}</td></tr>"
     if issue_assignee:
-        issue_rows += f"<tr><td style='color:#6B778C;padding:3px 0;font-size:13px'>Assignee</td><td style='font-size:13px;color:#172B4D'>{issue_assignee}</td></tr>"
+        issue_rows += f"<tr><td style='color:#6B778C;padding:3px 0;font-size:13px'>Assignee</td><td style='font-size:13px;color:#172B4D'>{_vals['a']}</td></tr>"
 
     # Comment block (only for comment/mention emails)
     comment_block = ""
     if comment_body:
-        preview = comment_body[:400] + ("..." if len(comment_body) > 400 else "")
+        from html import escape
+        preview = escape(comment_body[:400]) + ("..." if len(comment_body) > 400 else "")
+        label = escape(body_label) if body_label else f"Comment by {escape(actor)}"
         comment_block = f"""
         <div style="margin: 20px 0;">
             <p style="font-size: 12px; font-weight: 700; color: #6B778C; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">
-                Comment by {actor}
+                {label}
             </p>
             <div style="background: #F8F9FF; border-left: 4px solid #6554C0; border-radius: 0 6px 6px 0;
                         padding: 14px 16px; font-size: 14px; color: #172B4D; line-height: 1.6;">
@@ -324,15 +449,15 @@ def send_notification_email(
 
             <!-- ACTION LINE -->
             <p style="font-size: 15px; color: #172B4D; margin: 0 0 20px 0; line-height: 1.5;">
-                <strong>{actor}</strong> {action}
-                <strong>{issue_key}</strong> in <strong>{project_name}</strong>.
+                <strong>{_actor_h}</strong> {action}
+                <strong>{issue_key}</strong> in <strong>{_project_h}</strong>.
             </p>
 
             <!-- ISSUE CARD -->
             <div style="background: #F4F5F7; border-radius: 8px; padding: 16px 18px; margin-bottom: 20px;">
                 <div style="font-size: 11px; color: #6B778C; font-weight: 700; text-transform: uppercase;
-                            letter-spacing: 0.6px; margin-bottom: 6px;">{project_name} &nbsp;·&nbsp; {issue_key}</div>
-                <div style="font-size: 17px; font-weight: 700; color: #172B4D; margin-bottom: 12px;">{issue_title}</div>
+                            letter-spacing: 0.6px; margin-bottom: 6px;">{_project_h} &nbsp;·&nbsp; {issue_key}</div>
+                <div style="font-size: 17px; font-weight: 700; color: #172B4D; margin-bottom: 12px;">{_title_h}</div>
                 {f'<table style="border-collapse:collapse">{issue_rows}</table>' if issue_rows else ""}
             </div>
 
@@ -371,32 +496,7 @@ def send_notification_email(
     from_email = getattr(settings, "DEFAULT_FROM_EMAIL", "noreply@NEXO.local")
 
     try:
-        import ssl, smtplib
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = from_email
-        msg["To"] = recipient_email
-        msg.attach(MIMEText(plain_message, "plain"))
-        msg.attach(MIMEText(html_message, "html"))
-
-        context = ssl.create_default_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-
-        host = getattr(settings, "EMAIL_HOST", "smtp.gmail.com")
-        port = getattr(settings, "EMAIL_PORT", 587)
-        user = getattr(settings, "EMAIL_HOST_USER", "")
-        password = getattr(settings, "EMAIL_HOST_PASSWORD", "")
-
-        with smtplib.SMTP(host, port, timeout=10) as server:
-            server.ehlo()
-            server.starttls(context=context)
-            server.login(user, password)
-            server.sendmail(from_email, [recipient_email], msg.as_string())
-
+        send_mail_background(subject, plain_message, from_email, [recipient_email], html_message=html_message)
         return True
     except Exception as e:
         print(f"[NEXO Email Error]: {e}")
