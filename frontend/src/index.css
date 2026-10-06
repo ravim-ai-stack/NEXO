@@ -3086,12 +3086,16 @@ a {
 .jira-projects-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 20px;
+  gap: 28px;
+  border: 1px solid var(--jira-blue);
+  border-radius: var(--radius-lg);
+  padding: 24px !important;
+  margin: 0 24px 32px;
 }
 
 .jira-project-card {
   background: #FFFFFF;
-  border: 1px solid var(--jira-border);
+  border: 1px solid var(--jira-blue);
   border-radius: var(--radius-lg);
   padding: 20px;
   display: flex;
@@ -3102,7 +3106,7 @@ a {
 
 .jira-project-card:hover {
   box-shadow: 0 8px 24px rgba(9, 30, 66, 0.08);
-  border-color: #B3D4FF;
+  border-color: var(--jira-blue-hover);
 }
 
 .jira-project-card-top {
@@ -6434,10 +6438,12 @@ kbd {
 .db-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 22px;
-  padding: 28px 36px 48px;
+  gap: 28px;
+  padding: 28px;
   max-width: 1600px;
-  margin: 0 auto;
+  margin: 28px auto 48px;
+  border: 1px solid #E1E5EB;
+  border-radius: 16px;
 }
 @media (max-width: 1200px) {
   .db-grid { grid-template-columns: repeat(2, 1fr); }
@@ -6450,7 +6456,8 @@ kbd {
 .db-card {
   background: #FFFFFF;
   border-radius: 14px;
-  box-shadow: 0 2px 8px rgba(9,30,66,0.09), 0 0 0 1px rgba(9,30,66,0.05);
+  box-shadow: 0 2px 8px rgba(9,30,66,0.09);
+  border: 1px solid #E1E5EB;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -6964,3 +6971,23 @@ kbd {
 .mus-item:hover, .mus-item.on { background: #F0F5FF; }
 .mus-item input { margin: 0; }
 .mus-footer { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #EBECF0; padding-top: 6px; }
+
+/* Light border on every grid cell */
+.db-grid > *,
+.db-status-cols > *,
+.jira-summary-cards-grid > *,
+.jira-summary-sections-grid > *,
+.jira-member-tasks-grid > *,
+.jira-workload-grid > *,
+.jira-docs-grid > *,
+.jira-dashboard-kpi-grid > *,
+.jira-dashboard-charts-grid > *,
+.jira-marketplace-grid > *,
+.jira-views-grid > * {
+  border: 1px solid #E1E5EB;
+}
+
+/* Project card grids (Dashboard + Projects page): navigation blue */
+.jira-projects-grid > .jira-project-card {
+  border: 1px solid var(--jira-blue);
+}
