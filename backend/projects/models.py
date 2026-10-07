@@ -40,19 +40,34 @@ class ProjectMembership(models.Model):
 
 class ProjectDoc(models.Model):
     """
-    Project documentation files (PRD, Architecture, Retrospectives, Meeting notes).
+    Project documentation files (PRD, Architecture, Retrospectives, Meeting notes, Status reports, Timeline, etc.).
+    Supports markdown content as well as uploaded files (PDF, DOCX, XLSX).
     """
     class TemplateType(models.TextChoices):
+        STATUS = "STATUS", "Project Status / Weekly Report"
+        TIMELINE = "TIMELINE", "Timeline & Project Plan"
+        RESOURCE = "RESOURCE", "Resource / Team Document"
         PRD = "PRD", "Product Requirements (PRD)"
         ARCHITECTURE = "ARCHITECTURE", "Architecture & System Design"
         RETRO = "RETRO", "Sprint Retrospective"
         MEETING = "MEETING", "Meeting Notes & Decisions"
         CUSTOM = "CUSTOM", "Custom Document"
 
+    class FileType(models.TextChoices):
+        MARKDOWN = "MARKDOWN", "Markdown"
+        PDF = "PDF", "PDF Document"
+        DOCX = "DOCX", "Word Document"
+        XLSX = "XLSX", "Excel Spreadsheet"
+        OTHER = "OTHER", "Other File"
+
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="docs")
     title = models.CharField(max_length=255)
     content = models.TextField(blank=True)
     template_type = models.CharField(max_length=20, choices=TemplateType.choices, default=TemplateType.CUSTOM)
+    file = models.FileField(upload_to="project_docs/%Y%m%d/", null=True, blank=True)
+    file_type = models.CharField(max_length=20, choices=FileType.choices, default=FileType.MARKDOWN)
+    file_size = models.PositiveIntegerField(default=0, help_text="File size in bytes")
+    raw_text = models.TextField(blank=True, help_text="Extracted plain text content from uploaded file")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="created_docs"
     )
@@ -237,3 +252,73 @@ class CalendarEntry(models.Model):
 
     def __str__(self):
         return f"{self.project.key} {self.date} — {self.title}"
+
+
+class ProjectSignal(models.Model):
+    """
+    Structured intermediate representation of signals extracted from project documents
+    or derived from issues/sprints (phases, milestones, risks, blockers, dependencies, updates, decisions).
+    Retains full source traceability (document name, page/section/row location, confidence).
+    """
+    class Category(models.TextChoices):
+        PHASE = "PHASE", "Active Phase / Workstream"
+        MILESTONE = "MILESTONE", "Milestone / Deliverable"
+        RISK = "RISK", "Project Risk"
+        BLOCKER = "BLOCKER", "Active Blocker"
+        CHALLENGE = "CHALLENGE", "Project Challenge"
+        DEPENDENCY = "DEPENDENCY", "Technical or External Dependency"
+        UPDATE = "UPDATE", "Status Update"
+        DECISION = "DECISION", "Key Decision"
+        RESOURCE_NOTE = "RESOURCE_NOTE", "Resource / Team Allocation Note"
+
+    class Severity(models.TextChoices):
+        CRITICAL = "CRITICAL", "Critical"
+        HIGH = "HIGH", "High"
+        MEDIUM = "MEDIUM", "Medium"
+        LOW = "LOW", "Low"
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="signals")
+    source_doc = models.ForeignKey(
+        ProjectDoc, on_delete=models.SET_NULL, null=True, blank=True, related_name="signals"
+    )
+    category = models.CharField(max_length=25, choices=Category.choices, default=Category.UPDATE)
+    title = models.CharField(max_length=300)
+    description = models.TextField(blank=True)
+    status = models.CharField(max_length=50, default="ACTIVE", help_text="e.g. ACTIVE, RESOLVED, DELAYED, COMPLETED")
+    severity = models.CharField(max_length=15, choices=Severity.choices, default=Severity.MEDIUM)
+    target_date = models.DateField(null=True, blank=True, help_text="Target milestone or resolution date")
+    source_location = models.CharField(
+        max_length=255, blank=True, help_text="Page, section heading, or sheet cell reference"
+    )
+    confidence = models.FloatField(default=1.0, help_text="Confidence score from 0.0 to 1.0")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"[{self.project.key}] {self.category}: {self.title}"
+
+
+class ProjectIntelligenceSummary(models.Model):
+    """
+    Cached, executive-level project intelligence summary synthesizing
+    structured project metrics, active workstreams, and document-derived signals.
+    """
+    class HealthStatus(models.TextChoices):
+        ON_TRACK = "ON_TRACK", "On Track"
+        AT_RISK = "AT_RISK", "At Risk"
+        OFF_TRACK = "OFF_TRACK", "Off Track"
+
+    project = models.OneToOneField(Project, on_delete=models.CASCADE, related_name="intelligence_summary")
+    health_status = models.CharField(max_length=20, choices=HealthStatus.choices, default=HealthStatus.ON_TRACK)
+    health_rationale = models.TextField(blank=True, help_text="Deterministic justification for health state")
+    current_phase = models.CharField(max_length=200, blank=True, help_text="Active phase / workstream")
+    executive_summary = models.TextField(blank=True, help_text="Concise 4-5 bullet executive briefing")
+    signals_count = models.PositiveIntegerField(default=0)
+    last_synced_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"[{self.project.key}] Health: {self.health_status} ({self.current_phase})"
+

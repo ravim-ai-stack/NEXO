@@ -695,11 +695,14 @@ class DashboardView(APIView):
         # ── 2. My projects with open/done counts ──
         projects = Project.objects.filter(
             visible_projects_q(user)
-        ).distinct().prefetch_related("issues")
+        ).distinct().prefetch_related("issues").select_related("intelligence_summary")
 
         my_projects = []
         for p in projects:
             all_issues = p.issues.all()
+            intel_sum = getattr(p, "intelligence_summary", None)
+            health_stat = intel_sum.health_status if intel_sum else "ON_TRACK"
+            curr_phase = intel_sum.current_phase if intel_sum else ""
             my_projects.append({
                 "id": p.id,
                 "name": p.name,
@@ -708,6 +711,8 @@ class DashboardView(APIView):
                 "open": all_issues.filter(status__in=["TODO", "IN_PROGRESS"]).count(),
                 "done": all_issues.filter(status="DONE").count(),
                 "my_role": effective_project_role(user, p),
+                "health_status": health_stat,
+                "current_phase": curr_phase,
             })
 
         # ── 3. Active sprint progress ──

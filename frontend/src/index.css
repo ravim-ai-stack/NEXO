@@ -6991,3 +6991,363 @@ kbd {
 .jira-projects-grid > .jira-project-card {
   border: 1px solid var(--jira-blue);
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   PMO & PROJECT INTELLIGENCE DASHBOARD STYLES
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.pmo-top-banner {
+  background: #FFFFFF;
+  border-bottom: 1px solid #DFE1E6;
+  padding: 16px 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.pmo-top-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.pmo-rag-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 13px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  box-shadow: 0 1px 3px rgba(9,30,66,0.08);
+}
+.pmo-rag-pill.on_track {
+  background: #E3FCEF;
+  color: #006644;
+  border: 1px solid #ABF5D1;
+}
+.pmo-rag-pill.at_risk {
+  background: #FFF0B3;
+  color: #172B4D;
+  border: 1px solid #FFE380;
+}
+.pmo-rag-pill.off_track {
+  background: #FFEBE6;
+  color: #BF2600;
+  border: 1px solid #FFBDAD;
+}
+.pmo-rag-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pmo-rag-pill.on_track .pmo-rag-dot { background: #00875A; }
+.pmo-rag-pill.at_risk .pmo-rag-dot { background: #FF8B00; }
+.pmo-rag-pill.off_track .pmo-rag-dot { background: #DE350B; }
+
+.pmo-phase-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #DEEBFF;
+  color: #0052CC;
+  border: 1px solid #B3D4FF;
+  padding: 4px 11px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pmo-fresh-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-weight: 500;
+}
+.pmo-fresh-badge.fresh { background: #E3FCEF; color: #006644; }
+.pmo-fresh-badge.moderate { background: #FFF0B3; color: #7F5F00; }
+.pmo-fresh-badge.stale { background: #FFEBE6; color: #BF2600; }
+.pmo-fresh-badge.no_docs { background: #F4F5F7; color: #6B778C; }
+
+.pmo-brief-box {
+  background: #FAFBFC;
+  border: 1px solid #EBECF0;
+  border-left: 4px solid #0052CC;
+  border-radius: 8px;
+  padding: 16px 18px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: #172B4D;
+}
+.pmo-brief-bullet {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.pmo-brief-bullet:last-child { margin-bottom: 0; }
+.pmo-brief-bullet strong {
+  color: #0052CC;
+}
+
+.pmo-source-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #42526E;
+  background: #EBECF0;
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin-top: 4px;
+  text-decoration: none;
+}
+.pmo-source-tag.clickable:hover {
+  background: #DFE1E6;
+  color: #0052CC;
+  cursor: pointer;
+}
+
+/* ── Circular Progress Gauge ── */
+.pmo-gauge-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 0;
+}
+.pmo-gauge-svg {
+  width: 140px;
+  height: 140px;
+  transform: rotate(-90deg);
+}
+.pmo-gauge-bg {
+  fill: none;
+  stroke: #EBECF0;
+  stroke-width: 12;
+}
+.pmo-gauge-fill {
+  fill: none;
+  stroke-linecap: round;
+  stroke-width: 12;
+  transition: stroke-dashoffset 0.6s ease;
+}
+.pmo-gauge-text {
+  font-size: 26px;
+  font-weight: 800;
+  fill: #172B4D;
+}
+
+.pmo-kpi-subgrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 14px;
+  width: 100%;
+}
+.pmo-kpi-minibox {
+  background: #F4F5F7;
+  border-radius: 6px;
+  padding: 8px 10px;
+  text-align: center;
+}
+.pmo-kpi-minibox .val {
+  font-size: 16px;
+  font-weight: 800;
+  color: #172B4D;
+  display: block;
+}
+.pmo-kpi-minibox .lbl {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #6B778C;
+}
+
+/* ── Timeline list ── */
+.pmo-timeline-track {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+  padding-left: 20px;
+}
+.pmo-timeline-track::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 6px;
+  width: 2px;
+  background: #DFE1E6;
+}
+.pmo-timeline-item {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pmo-timeline-dot {
+  position: absolute;
+  left: -20px;
+  top: 4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #FFFFFF;
+  border: 3px solid #0052CC;
+}
+.pmo-timeline-dot.completed { border-color: #00875A; background: #00875A; }
+.pmo-timeline-dot.delayed { border-color: #DE350B; }
+.pmo-timeline-content {
+  flex: 1;
+}
+.pmo-timeline-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #172B4D;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pmo-timeline-date {
+  font-size: 11px;
+  color: #6B778C;
+  margin-top: 2px;
+}
+
+/* ── Risk & Blocker Radar ── */
+.pmo-filter-chips {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.pmo-chip {
+  background: #F4F5F7;
+  border: 1px solid #DFE1E6;
+  border-radius: 14px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #42526E;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.pmo-chip:hover {
+  background: #EBECF0;
+}
+.pmo-chip.active {
+  background: #DEEBFF;
+  border-color: #0052CC;
+  color: #0052CC;
+}
+
+.pmo-radar-item {
+  background: #FAFBFC;
+  border: 1px solid #EBECF0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  transition: box-shadow 0.15s;
+}
+.pmo-radar-item:hover {
+  box-shadow: 0 2px 8px rgba(9,30,66,0.08);
+}
+.pmo-radar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.pmo-sev-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+.pmo-sev-badge.critical { background: #FFEBE6; color: #BF2600; border: 1px solid #FFBDAD; }
+.pmo-sev-badge.high { background: #FFEDEB; color: #DE350B; border: 1px solid #FFC4BA; }
+.pmo-sev-badge.medium { background: #FFF0B3; color: #7F5F00; border: 1px solid #FFE380; }
+.pmo-sev-badge.low { background: #E3FCEF; color: #006644; border: 1px solid #ABF5D1; }
+
+.pmo-radar-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #172B4D;
+}
+.pmo-radar-desc {
+  font-size: 12px;
+  color: #5E6C84;
+  line-height: 1.4;
+  margin-top: 3px;
+}
+
+/* ── Workstream Bars ── */
+.pmo-ws-row {
+  margin-bottom: 12px;
+}
+.pmo-ws-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #172B4D;
+  margin-bottom: 5px;
+}
+.pmo-ws-bar-track {
+  height: 8px;
+  background: #EBECF0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.pmo-ws-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+/* ── Doc Items ── */
+.pmo-doc-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  background: #FAFBFC;
+  border: 1px solid #EBECF0;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+.pmo-doc-card:hover {
+  background: #F4F5F7;
+}
+.pmo-doc-badge {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 4px 6px;
+  border-radius: 4px;
+  color: #FFFFFF;
+}
+.pmo-doc-badge.xlsx { background: #217346; }
+.pmo-doc-badge.docx { background: #2B579A; }
+.pmo-doc-badge.pdf { background: #D9381E; }
+.pmo-doc-badge.markdown { background: #0052CC; }
+.pmo-doc-badge.other { background: #6B778C; }

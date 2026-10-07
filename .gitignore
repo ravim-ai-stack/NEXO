@@ -35,3 +35,7 @@ Thumbs.db
 .agents/
 .claude/skills/
 skills-lock.json
+
+# User uploaded media files
+backend/media/
+

@@ -2,7 +2,19 @@ from rest_framework import serializers
 
 from users.serializers import UserSerializer
 
-from .models import AutomationRule, CalendarEntry, Project, ProjectDoc, ProjectMembership, Sprint, WorkflowState, WorkflowTransition, SavedFilter
+from .models import (
+    AutomationRule,
+    CalendarEntry,
+    Project,
+    ProjectDoc,
+    ProjectIntelligenceSummary,
+    ProjectMembership,
+    ProjectSignal,
+    SavedFilter,
+    Sprint,
+    WorkflowState,
+    WorkflowTransition,
+)
 
 
 class ProjectMembershipSerializer(serializers.ModelSerializer):
@@ -16,14 +28,28 @@ class ProjectMembershipSerializer(serializers.ModelSerializer):
 
 class ProjectDocSerializer(serializers.ModelSerializer):
     created_by = UserSerializer(read_only=True)
+    file_url = serializers.SerializerMethodField()
+    signals_count = serializers.SerializerMethodField()
 
     class Meta:
         model = ProjectDoc
         fields = [
             "id", "project", "title", "content", "template_type",
-            "created_by", "created_at", "updated_at"
+            "file", "file_type", "file_size", "file_url", "signals_count",
+            "created_by", "created_at", "updated_at",
         ]
-        read_only_fields = ["created_by"]
+        read_only_fields = ["created_by", "file_size", "file_type"]
+
+    def get_file_url(self, obj):
+        request = self.context.get("request")
+        if obj.file and request:
+            return request.build_absolute_uri(obj.file.url)
+        elif obj.file:
+            return obj.file.url
+        return None
+
+    def get_signals_count(self, obj):
+        return obj.signals.count()
 
 
 class AutomationRuleSerializer(serializers.ModelSerializer):
@@ -76,12 +102,13 @@ class ProjectSerializer(serializers.ModelSerializer):
     docs_count = serializers.SerializerMethodField()
     my_role = serializers.SerializerMethodField()
     workflow_states = WorkflowStateSerializer(many=True, read_only=True)
+    intelligence = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
         fields = [
             "id", "name", "key", "description", "created_by", "created_at",
-            "members", "docs_count", "my_role", "workflow_states",
+            "members", "docs_count", "my_role", "workflow_states", "intelligence",
         ]
 
     def get_docs_count(self, obj):
@@ -93,6 +120,38 @@ class ProjectSerializer(serializers.ModelSerializer):
             return None
         from users.access import effective_project_role
         return effective_project_role(request.user, obj)
+
+    def get_intelligence(self, obj):
+        summary = getattr(obj, "intelligence_summary", None)
+        if summary:
+            return {
+                "health_status": summary.health_status,
+                "current_phase": summary.current_phase,
+                "health_rationale": summary.health_rationale,
+                "signals_count": summary.signals_count,
+            }
+        return None
+
+
+class ProjectSignalSerializer(serializers.ModelSerializer):
+    source_doc_title = serializers.ReadOnlyField(source="source_doc.title")
+
+    class Meta:
+        model = ProjectSignal
+        fields = [
+            "id", "project", "source_doc", "source_doc_title", "category",
+            "title", "description", "status", "severity", "target_date",
+            "source_location", "confidence", "created_at", "updated_at",
+        ]
+
+
+class ProjectIntelligenceSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProjectIntelligenceSummary
+        fields = [
+            "id", "project", "health_status", "health_rationale",
+            "current_phase", "executive_summary", "signals_count", "last_synced_at",
+        ]
 
 
 class SavedFilterSerializer(serializers.ModelSerializer):

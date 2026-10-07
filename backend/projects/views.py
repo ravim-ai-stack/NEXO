@@ -6,6 +6,7 @@ from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
 from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
 from users.access import (
@@ -20,16 +21,30 @@ from users.access import (
 from users.models import Notification
 from users.utils import send_project_invite_email
 
-from .models import AutomationRule, CalendarEntry, Project, ProjectDoc, ProjectMembership, Sprint, WorkflowState, WorkflowTransition
-from .models import create_default_workflow, SavedFilter
-from .reminders import local_today, mentioned_users, notify_added, process_due
+from .intelligence import generate_project_intelligence, process_and_extract_document
+from .models import (
+    AutomationRule,
+    CalendarEntry,
+    Project,
+    ProjectDoc,
+    ProjectIntelligenceSummary,
+    ProjectMembership,
+    ProjectSignal,
+    SavedFilter,
+    Sprint,
+    WorkflowState,
+    WorkflowTransition,
+    create_default_workflow,
+)
 from .permissions import IsProjectMember, IsProjectMemberOrAbove
+from .reminders import local_today, mentioned_users, notify_added, process_due
 from .serializers import (
     AutomationRuleSerializer,
     CalendarEntrySerializer,
     ProjectDocSerializer,
     ProjectMembershipSerializer,
     ProjectSerializer,
+    ProjectSignalSerializer,
     SavedFilterSerializer,
     SprintSerializer,
     WorkflowStateSerializer,
@@ -131,11 +146,77 @@ class ProjectViewSet(viewsets.ModelViewSet):
         ProjectMembership.objects.filter(project=project, user_id=user_id).delete()
         return Response(ProjectSerializer(project, context={"request": request}).data)
 
+    @action(detail=True, methods=["get"])
+    def intelligence(self, request, pk=None):
+        """
+        GET /api/projects/<id>/intelligence/
+        Returns comprehensive PMO project overview combining structured data and document signals.
+        """
+        project = self.get_object()
+        data = generate_project_intelligence(project)
+        return Response(data)
+
+    @action(detail=True, methods=["post"])
+    def refresh_intelligence(self, request, pk=None):
+        """
+        POST /api/projects/<id>/refresh_intelligence/
+        Re-scans all project documents, extracts signals, and updates executive intelligence cache.
+        """
+        project = self.get_object()
+        for doc in project.docs.all():
+            try:
+                process_and_extract_document(doc)
+            except Exception as e:
+                print(f"[Error processing doc {doc.id}]: {e}")
+        data = generate_project_intelligence(project)
+        return Response(data)
+
+    @action(detail=True, methods=["post"], parser_classes=[MultiPartParser, FormParser])
+    def upload_doc(self, request, pk=None):
+        """
+        POST /api/projects/<id>/upload_doc/
+        Upload an Excel (XLSX), Word (DOCX), PDF, or Markdown file to the project.
+        Parses text, classifies document context, extracts signals, and updates intelligence.
+        """
+        project = self.get_object()
+        file_obj = request.FILES.get("file")
+        title = request.data.get("title")
+        content = request.data.get("content", "")
+        template_type = request.data.get("template_type", ProjectDoc.TemplateType.CUSTOM)
+
+        if not file_obj and not content:
+            return Response({"error": "Either file or content is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not title:
+            if file_obj:
+                title = file_obj.name.rsplit(".", 1)[0].replace("_", " ").title()
+            else:
+                title = "Uploaded Project Document"
+
+        doc = ProjectDoc.objects.create(
+            project=project,
+            title=title,
+            content=content,
+            file=file_obj,
+            template_type=template_type,
+            created_by=request.user,
+        )
+
+        try:
+            intel = process_and_extract_document(doc)
+        except Exception as e:
+            print(f"[Extraction error on upload]: {e}")
+            intel = generate_project_intelligence(project)
+
+        doc_data = ProjectDocSerializer(doc, context={"request": request}).data
+        return Response({"doc": doc_data, "intelligence": intel}, status=status.HTTP_201_CREATED)
+
 
 class ProjectDocViewSet(viewsets.ModelViewSet):
-    """CRUD API for project documentation pages."""
+    """CRUD API for project documentation pages with auto-extraction."""
     serializer_class = ProjectDocSerializer
     permission_classes = [permissions.IsAuthenticated, LimitedMemberReadOnly]
+    parser_classes = [MultiPartParser, FormParser]
 
     def get_queryset(self):
         project_id = self.request.query_params.get("project")
@@ -147,7 +228,65 @@ class ProjectDocViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         if not is_project_admin(self.request.user, serializer.validated_data["project"]):
             raise PermissionDenied("You cannot create documents in this project.")
-        serializer.save(created_by=self.request.user)
+        doc = serializer.save(created_by=self.request.user)
+        try:
+            process_and_extract_document(doc)
+        except Exception as e:
+            print(f"[Doc extraction error on create]: {e}")
+
+    def perform_update(self, serializer):
+        doc = serializer.save()
+        try:
+            process_and_extract_document(doc)
+        except Exception as e:
+            print(f"[Doc extraction error on update]: {e}")
+
+    @action(detail=True, methods=["get"])
+    def signals(self, request, pk=None):
+        """Returns all structured signals extracted from this specific document."""
+        doc = self.get_object()
+        signals = doc.signals.all().order_by("-confidence", "-id")
+        return Response(ProjectSignalSerializer(signals, many=True).data)
+
+    @action(detail=True, methods=["post"])
+    def reextract(self, request, pk=None):
+        """Forces re-parsing and signal extraction on this document."""
+        doc = self.get_object()
+        try:
+            intel = process_and_extract_document(doc)
+            return Response({
+                "message": "Signals extracted successfully",
+                "doc": ProjectDocSerializer(doc, context={"request": request}).data,
+                "intelligence": intel,
+            })
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ProjectSignalViewSet(viewsets.ModelViewSet):
+    """
+    CRUD for extracted project signals (risks, blockers, decisions, milestones, updates).
+    """
+    serializer_class = ProjectSignalSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    http_method_names = ["get", "patch", "delete", "head", "options"]
+
+    def get_queryset(self):
+        qs = ProjectSignal.objects.filter(visible_projects_q(self.request.user, "project__")).distinct()
+        project_id = self.request.query_params.get("project")
+        doc_id = self.request.query_params.get("source_doc") or self.request.query_params.get("doc")
+        category = self.request.query_params.get("category")
+        status_val = self.request.query_params.get("status")
+        if project_id:
+            qs = qs.filter(project_id=project_id)
+        if doc_id:
+            qs = qs.filter(source_doc_id=doc_id)
+        if category:
+            qs = qs.filter(category=category)
+        if status_val:
+            qs = qs.filter(status=status_val)
+        return qs
+
 
 
 class AutomationRuleViewSet(viewsets.ModelViewSet):

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { userLabel } from "../utils/userLabel";
 import { IssueTypeIcon, PriorityIcon } from "./Icons";
 
@@ -88,7 +89,16 @@ export default function SummaryView({
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <Link
+              to={`/dashboard?project=${project?.id}`}
+              className="jira-btn-primary"
+              style={{ textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 6, background: "linear-gradient(135deg, #0052CC, #6554C0)", padding: "7px 14px", color: "#FFFFFF" }}
+              title="Open full PMO Project Intelligence Dashboard"
+            >
+              <span>PMO Intelligence Dashboard</span>
+              <span style={{ fontSize: 13 }}>→</span>
+            </Link>
             <button className="jira-btn-secondary" onClick={handleCopyReport} title="Copy formatted text report">
               {copiedReport ? "Copied!" : "Copy Report"}
             </button>

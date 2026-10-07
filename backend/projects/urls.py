@@ -5,6 +5,7 @@ from .views import (
     AutomationRuleViewSet,
     CalendarEntryViewSet,
     ProjectDocViewSet,
+    ProjectSignalViewSet,
     ProjectViewSet,
     SavedFilterViewSet,
     SprintViewSet,
@@ -16,6 +17,7 @@ from .views import (
 router = DefaultRouter()
 router.register("projects", ProjectViewSet, basename="project")
 router.register("docs", ProjectDocViewSet, basename="doc")
+router.register("signals", ProjectSignalViewSet, basename="signal")
 router.register("automation-rules", AutomationRuleViewSet, basename="automation-rule")
 router.register("sprints", SprintViewSet, basename="sprint")
 router.register("workflow-states", WorkflowStateViewSet, basename="workflow-state")
